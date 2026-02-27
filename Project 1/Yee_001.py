@@ -50,12 +50,14 @@ if boolse:
 
     def Updater(Ez, Hx, Hy):
         # Update magnetic fields
-        Hx[:-1, :] += (dt/(mu0*dy)) * (Ez[1:, :] - Ez[:-1, :])
-        Hy[:, :-1] -= (dt/(mu0*dx)) * (Ez[:, 1:] - Ez[:, :-1])
+        Hx[:, :-1] -= (dt / (mu0 * dy)) * (Ez[:, 1:] - Ez[:, :-1])
+        Hy[:-1, :] += (dt / (mu0 * dx)) * (Ez[1:, :] - Ez[:-1, :])
         # Update electric field
-        Ez[1:-1, 1:-1] += (dt/(epsilon0*dx)) * ((Hy[1:-1, 2:] - Hy[1:-1, 1:-1]) - (Hx[2:, 1:-1] - Hx[1:-1, 1:-1]))
+        Ez[1:-1, 1:-1] += (dt / (epsilon0)) * (
+                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx - 
+                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy)
 
-
+    
 
 
 
@@ -77,15 +79,15 @@ if boolse:
 
         bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2) # update source
 
-        p[x0,y0] = p[x0,y0] + bron # add source to field
-        Updater(c,dx,dy,dt)   # propagate over dt
-        recorder[it] = p[x1,y1] # Store field at recorder
+        Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
+        Updater(Ez, Hx, Hy)   # propagate over dt
+        recorder[it] = Ez[x1,y1] # Store field at recorder
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(p.T, vmin=-0.02*A, vmax=0.02*A),
+            ax.imshow(Ez.T, vmin=-0.02*A, vmax=0.02*A),
             # ax.imshow(p_ref.T, vmin=-0.02*A, vmax=0.02*A),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
@@ -93,5 +95,4 @@ if boolse:
         movie.append(artists)
     my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000,
                                     blit=True)
-    plt.show() 
-    print("Tis hier nog niet te zien jong")
+    plt.show()
