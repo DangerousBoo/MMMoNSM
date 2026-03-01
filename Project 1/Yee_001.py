@@ -33,7 +33,8 @@ y0 = int(ny/2)  # Source y position (grid index)
 x1 = int(nx/4) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
-
+eps=epsilon0*np.ones((nx-2,ny-2))
+eps[int(nx/2):-1, int(ny/2):-1]*=2
 
 
 
@@ -53,7 +54,7 @@ if boolse:
         Hx[:, :-1] -= (dt / (mu0 * dy)) * (Ez[:, 1:] - Ez[:, :-1])
         Hy[:-1, :] += (dt / (mu0 * dx)) * (Ez[1:, :] - Ez[:-1, :])
         # Update electric field
-        Ez[1:-1, 1:-1] += (dt / (epsilon0)) * (
+        Ez[1:-1, 1:-1] += (dt / (eps)) * (
                 (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx - 
                 (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy)
 
