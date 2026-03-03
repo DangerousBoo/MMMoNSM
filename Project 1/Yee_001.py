@@ -10,11 +10,11 @@ nx, ny = 100, 100  # Number of grid points in x,y direction
 L = 1.0  # Length of the domain in meters
 dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
 dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
-dx_internal = (dx[:-1] + dx[1:]) / 2.0
-dy_internal = (dy[:-1] + dy[1:]) / 2.0
+dx_d = (dx[:-1] + dx[1:]) / 2.0
+dy_d = (dy[:-1] + dy[1:]) / 2.0
 # Add the "Half-Cells" at the boundaries to make them (nx-1,1) and (1,ny-1) for the update equations
-dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
-dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
+# dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
+# dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
 
 c = 3e8  # Speed of light in vacuum (m/s)
 
@@ -51,8 +51,8 @@ y1 = int(ny/2) # Recorder y position (grid index)
 # Constants for update equations
 C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps_z/dt - sigma/2)
 S_ez = (eps_z/dt - sigma/2) / (eps_z/dt - sigma/2)
-C_hx = (dt * dx_d) / (dy * mu_x) 
-C_hy = (dt * dy_d) / (dx * mu_y)
+C_hx = (dt * dx_d[None, :]) / (dy * mu_x) 
+C_hy = (dt * dy_d[:, None]) / (dx * mu_y)
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
