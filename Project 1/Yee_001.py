@@ -17,14 +17,20 @@ dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
 dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
 
 c = 3e8  # Speed of light in vacuum (m/s)
+
 epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
+eps_z = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
+eps_z[int(nx/2):-1, int(ny/2):-1]*=2
+
+
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-eps = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
-mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
+mu_x = mu0 * np.ones((nx-1, ny))  # Permeability array (H/m)
+mu_y = mu0 * np.ones((nx, ny-1))  # Permeability array (H/m)
+
 sigma = np.zeros((nx, ny))  # Conductivity array (S/m)
-print(np.eye(4)[:-1,:])
-print(np.eye(4)[:-1,:].shape)
-eps[int(nx/2):-1, int(ny/2):-1]*=2
+
+
+
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 1000  # Number of time steps
@@ -43,10 +49,10 @@ x1 = int(nx/4) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
 # Constants for update equations
-C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps/dt - sigma/2)
-S_ez = (eps/dt - sigma/2) / (eps/dt - sigma/2)
-C_hx = (dt * dx_d) / (dy * mu) 
-C_hy = (dt * dy_d) / (dx * mu)
+C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps_z/dt - sigma/2)
+S_ez = (eps_z/dt - sigma/2) / (eps_z/dt - sigma/2)
+C_hx = (dt * dx_d) / (dy * mu_x) 
+C_hy = (dt * dy_d) / (dx * mu_y)
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
