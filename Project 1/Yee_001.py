@@ -69,7 +69,7 @@ if boolse:
         Ez[1:-1, 1:-1] = S_ez[1:-1, 1:-1] * Ez[1:-1, 1:-1] + C_ez[1:-1, 1:-1] * (
                 (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) - 
                 (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]))
-        
+
         # PEC unnecessary since we are only updating the interior points
         # Ez[0, :] = 0  # PEC
         # Ez[-1, :] = 0  # PEC
