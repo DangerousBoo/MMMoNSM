@@ -6,12 +6,10 @@ from IPython.display import HTML
 ################################################################################################################################################
 #                                                           Parameters:                                                       
 ################################################################################################################################################
-nx, ny = 100, 100  # Number of grid points in x,y direction
-L = 1.0  # Length of the domain in meters
+nx, ny = 200, 200  # Number of grid points in x,y direction
+L = 1  # Length of the domain in meters
 dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
 dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
-dx_d = (dx[:-1] + dx[1:]) / 2.0
-dy_d = (dy[:-1] + dy[1:]) / 2.0
 # Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
 dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
 dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
@@ -19,7 +17,7 @@ dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 10
 
 
 # PML thickness in grid cells
-p = 2
+p = 15
 m = 4 # Polynomial order for scaling
 eta_max = (m + 1) / (150 * np.pi * dx[0])  # Maximum stretching factor
 ksi_kappa_max = 3.0
@@ -54,14 +52,7 @@ epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
 Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
 gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
-
-eps_z = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
-
-
 mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
-mu_x = (mu[:, :-1] + mu[:, 1:]) / 2.0
-mu_y = (mu[:-1, :] + mu[1:, :]) / 2.0
-
 sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 
 
@@ -72,7 +63,7 @@ nt = 500  # Number of time steps
 
 # Some source parameters
 A = 1.0  # Amplitude of the source
-fc = 1e9  # Frequency of the source (Hz)
+fc = 1e10  # Frequency of the source (Hz)
 sig = 1/(2*fc)  # Standard deviation of the source (s)
 t0 = 3*sig  # Time delay of the source (s)
     
@@ -118,7 +109,7 @@ if boolse:
     Hx_dot = np.zeros((nx, ny-1))  # Auxiliary magnetic field x
     Hy_dot = np.zeros((nx-1, ny))  # Auxiliary magnetic field y
 
-    def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot,t,it):
+    def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot,t):
         # ---- UPDATE MAGNETIC FIELDS ----:
         # Update H°x:
         Hx_dot_old = Hx_dot.copy()
@@ -135,8 +126,8 @@ if boolse:
         Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old)) / beta_xp_hy
 
         # ---- UPDATE ELECTRIC FIELD ----:
-        curl_h = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx_d[1:-1, None] - \
-                 (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / dy_d[None, 1:-1]
+        curl_h = (Hy[1:,1:-1] - Hy[:-1,1:-1]) / dx_d[1:-1,None] \
+                - (Hx[1:-1,1:] - Hx[1:-1,:-1]) / dy_d[None,1:-1]
 
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
@@ -144,10 +135,6 @@ if boolse:
         coef_p = (1.0 / dt + sigma / (2.0 * alpha_p))
         coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
         Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
-
-        # add source to E°°z:
-        source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
-        Ez_ddot[x0, y0] += source_val
 
         # Update Jc:
         Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
@@ -162,7 +149,8 @@ if boolse:
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
-
+        source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
+        Ez[x0,y0] += source_val
 
 
 
@@ -182,15 +170,14 @@ if boolse:
         t = (it-1)*dt
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
-        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t,it)
+        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t)
         recorder[it] = Ez[x1,y1] # Store field at recorder
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T * Z0, vmin=-50*A, vmax=50*A),
-            # ax.imshow(p_ref.T, vmin=-0.02*A, vmax=0.02*A),
+            ax.imshow(Ez.T, vmin=-Ez.max(), vmax=Ez.max()),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
@@ -198,3 +185,8 @@ if boolse:
     my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000,
                                     blit=True)
     plt.show()
+
+
+
+plt.plot(timeseries, recorder)        
+plt.show()
