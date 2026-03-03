@@ -6,57 +6,73 @@ from IPython.display import HTML
 ################################################################################################################################################
 #                                                           Parameters:                                                       
 ################################################################################################################################################
+nx, ny = 100, 100  # Number of grid points in x,y direction
+L = 1.0  # Length of the domain in meters
+dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
+dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
+dx_internal = (dx[:-1] + dx[1:]) / 2.0
+dy_internal = (dy[:-1] + dy[1:]) / 2.0
+# Add the "Half-Cells" at the boundaries to make them (nx-1,1) and (1,ny-1) for the update equations
+dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
+dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
+
 c = 3e8  # Speed of light in vacuum (m/s)
 epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-
-dx = 0.01  # Spatial step (m)
-dy = 0.01  # Spatial step (m)
-L = 1.0  # Length of the simulation domain (m)
-nx = int(L/dx)  # Number of grid points in x direction
-ny = int(L/dy)  # Number of grid points in y direction
-
+eps = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
+mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
+sigma = np.zeros((nx, ny))  # Conductivity array (S/m)
+print(np.eye(4)[:-1,:])
+print(np.eye(4)[:-1,:].shape)
+eps[int(nx/2):-1, int(ny/2):-1]*=2
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
-dt = CFL/(c*np.sqrt((1/dx**2)+(1/dy**2))) # Time step (s)
+dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 1000  # Number of time steps
 
 # Some source parameters
 A = 1.0  # Amplitude of the source
 fc = 1e9  # Frequency of the source (Hz)
-sigma = 1/(2*fc)  # Standard deviation of the source (s)
-t0 = 3*sigma  # Time delay of the source (s)
+sig = 1/(2*fc)  # Standard deviation of the source (s)
+t0 = 3*sig  # Time delay of the source (s)
     
-# Source position
+# Source position           # TEMPORARY: source & recorder not matched to grid!!!
 x0 = int(nx/2)  # Source x position (grid index)
 y0 = int(ny/2)  # Source y position (grid index)
 # Recorder position
 x1 = int(nx/4) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
-eps=epsilon0*np.ones((nx-2,ny-2))
-eps[int(nx/2):-1, int(ny/2):-1]*=2
-
-
-
+# Constants for update equations
+C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps/dt - sigma/2)
+S_ez = (eps/dt - sigma/2) / (eps/dt - sigma/2)
+C_hx = (dt * dx_d) / (dy * mu) 
+C_hy = (dt * dy_d) / (dx * mu)
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
 boolse=(ant.lower() == 'y')
 if boolse:
-
-    # Initialize the staggered fields #NOT YET STAGGERED
+    # Initialize the staggered fields 
     Ez = np.zeros((nx, ny))  # Electric field in z direction
-    Hx = np.zeros((nx, ny))  # Magnetic field in x direction
-    Hy = np.zeros((nx, ny))  # Magnetic field in y direction
+    Hx = np.zeros((nx-1, ny-1))  # Magnetic field in x direction
+    Hy = np.zeros((nx-1, ny-1))  # Magnetic field in y direction
 
     def Updater(Ez, Hx, Hy):
-        # Update magnetic fields
-        Hx[:, :-1] -= (dt / (mu0 * dy)) * (Ez[:, 1:] - Ez[:, :-1])
-        Hy[:-1, :] += (dt / (mu0 * dx)) * (Ez[1:, :] - Ez[:-1, :])
         # Update electric field
-        Ez[1:-1, 1:-1] += (dt / (eps)) * (
-                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx - 
-                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy)
+        Ez[1:-1, 1:-1] = S_ez * Ez[1:-1, 1:-1] + C_ez * (
+                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx_d - 
+                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy_d)
+        
+        # PEC unnecessary since we are only updating the interior points
+        # Ez[0, :] = 0  # PEC
+        # Ez[-1, :] = 0  # PEC
+        # Ez[:, 0] = 0  # PEC
+        # Ez[:, -1] = 0  # PEC
+
+        # Update magnetic fields
+        Hx[:, :-1] -= C_hx * (Ez[:, 1:] - Ez[:, :-1])
+        Hy[:-1, :] += C_hy * (Ez[1:, :] - Ez[:-1, :])
+
 
     
 
@@ -75,12 +91,13 @@ if boolse:
 
     for it in range(0, nt):
         t = (it-1)*dt
+        print(t)
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
 
-        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2) # update source
+        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2) # maybe change to sine down the line?
 
-        Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
+        Ez[x0,y0] = Ez[x0,y0]  # add source to field
         Updater(Ez, Hx, Hy)   # propagate over dt
         recorder[it] = Ez[x1,y1] # Store field at recorder
 
