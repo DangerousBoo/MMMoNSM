@@ -56,19 +56,19 @@ Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
 gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
 
 eps_z = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
-eps_z[int(nx/2):-1, int(ny/2):-1]*=2
+
 
 mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
 mu_x = (mu[:, :-1] + mu[:, 1:]) / 2.0
 mu_y = (mu[:-1, :] + mu[1:, :]) / 2.0
 
-sigma = np.zeros((nx, ny))  # Conductivity array (S/m)
+sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 
 
 
-CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
+CFL = 0.7  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
-nt = 10  # Number of time steps
+nt = 500  # Number of time steps
 
 # Some source parameters
 A = 1.0  # Amplitude of the source
@@ -88,6 +88,18 @@ beta_xp = kappa_x / (c * dt)  + Z0 * eta_x / 2.0
 beta_yp = kappa_y / (c * dt)  + Z0 * eta_y / 2.0
 beta_xm = kappa_x / (c * dt)  - Z0 * eta_x / 2.0
 beta_ym = kappa_y / (c * dt)  - Z0 * eta_y / 2.0
+# Interpolate beta coefficients to the Hx grid (midpoints in y)
+beta_yp_hx = (beta_yp[:, :-1] + beta_yp[:, 1:]) / 2.0
+beta_ym_hx = (beta_ym[:, :-1] + beta_ym[:, 1:]) / 2.0
+beta_yp_hy = (beta_yp[:-1, :] + beta_yp[1:, :]) / 2.0
+beta_ym_hy = (beta_ym[:-1, :] + beta_ym[1:, :]) / 2.0
+
+# Interpolate beta coefficients to the Hy grid (midpoints in x)
+beta_xp_hx = (beta_xp[:, :-1] + beta_xp[:, 1:]) / 2.0
+beta_xm_hx = (beta_xm[:, :-1] + beta_xm[:, 1:]) / 2.0
+beta_xp_hy = (beta_xp[:-1, :] + beta_xp[1:, :]) / 2.0
+beta_xm_hy = (beta_xm[:-1, :] + beta_xm[1:, :]) / 2.0
+
 beta_z = 1.0 / (c * dt)
 alpha_p = 2.0 * gamma / dt + 1.0
 alpha_m = 2.0 * gamma / dt - 1.0
@@ -106,64 +118,52 @@ if boolse:
     Hx_dot = np.zeros((nx, ny-1))  # Auxiliary magnetic field x
     Hy_dot = np.zeros((nx-1, ny))  # Auxiliary magnetic field y
 
-    def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot):
-        # --- 1. Update jc (Conduction current density) ---
-        # Formula: (c0*gamma/dt + 0.5)*jc_new = (c0*gamma/dt - 0.5)*jc_old + Z0*sigma*ez_ddot
-        Jc[:, :] = (1.0 / ((c * gamma / dt) + 0.5)) * (
-            ((c * gamma / dt) - 0.5) * Jc + Z0 * sigma * Ez_ddot
-        )
-        print(Jc)
-        # --- 2. Update ez_ddot (Second auxiliary electric field) ---
-        # Formula: (ez_ddot_new - ez_ddot_old)/dt + jc = (dhy/dx - dhx/dy)
-        
-        Ez_ddot_old = Ez_ddot.copy()
-        Ez_ddot[1:-1, 1:-1] += dt * (
-            (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx_d[1:-1, None].T - 
-            (Hx[1:-1, 1:] - Hx[1:-1, :-1]).T / dy_d[None, 1:-1] - 
-            Jc[1:-1, 1:-1]
-        )
-
-        # --- 3. Update ez_dot (First auxiliary electric field) ---
-        # Formula: kappa_x/dt(ez_dot_new - ez_dot_old) + Z0*eta_x/2(ez_dot_new + ez_dot_old) = 1/dt(ez_ddot_new + ez_ddot_old)
-        Ez_dot_old = Ez_dot.copy()
-        Ez_dot[:, :] = (1.0 / (kappa_x / dt + Z0 * eta_x / 2.0)) * (
-            (kappa_x / dt - Z0 * eta_x / 2.0) * Ez_dot_old + (1.0 / dt) * (Ez_ddot + Ez_ddot_old)
-        )
-
-        # --- 4. Update ez (Primary electric field) ---
-        # Formula: kappa_y/dt(ez_new - ez_old) + Z0*eta_y/2(ez_new + ez_old) = 1/dt(ez_dot_new - ez_dot_old)
-        Ez_old = Ez.copy()
-        Ez[:, :] = (1.0 / (kappa_y / dt + Z0 * eta_y / 2.0)) * (
-            (kappa_y / dt - Z0 * eta_y / 2.0) * Ez_old + (1.0 / dt) * (Ez_dot - Ez_dot_old)
-        )
-
-        # --- 5. Update hx_dot (Auxiliary magnetic field x) ---
-        # Formula: kappa_y/dt(hx_dot_new - hx_dot_old) + Z0*eta_y/2(hx_dot_new + hx_dot_old) = -dez/dy
+    def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot,t,it):
+        # ---- UPDATE MAGNETIC FIELDS ----:
+        # Update H°x:
         Hx_dot_old = Hx_dot.copy()
-        Hx_dot[:, :] = (1.0 / (kappa_y[:, :-1] / dt + Z0 * eta_y[:, :-1] / 2.0)) * (
-            (kappa_y[:, :-1] / dt - Z0 * eta_y[:, :-1] / 2.0) * Hx_dot_old - 
-            (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]
-        )
+        Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
 
-        # --- 6. Update hy_dot (Auxiliary magnetic field y) ---
-        # Formula: (hy_dot_new - hy_dot_old)/dt = -dez/dx
-        Hy_dot_old = Hy_dot.copy()
-        Hy_dot[:, :] -= dt * ((Ez[1:, :] - Ez[:-1, :]) / dx[:, None])
+        # Update Hx:
+        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z
 
-        # --- 7. Update hx (Primary magnetic field x) ---
-        # Formula: (hx_new - hx_old)/dt = kappa_x/dt(hx_dot_new - hx_dot_old) + Z0*eta_x/2(hx_dot_new + hx_dot_old)
-        Hx[:, :] += (kappa_x[:, :-1] / dt) * (Hx_dot - Hx_dot_old) * dt + \
-                    (Z0 * eta_x[:, :-1] / 2.0) * (Hx_dot + Hx_dot_old) * dt
+        # Update H°y:
+        Hy_dot_old = Hy_dot.copy() 
+        Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z)
 
-        # --- 8. Update hy (Primary magnetic field y) ---
-        # Formula: kappa_x/dt(hy_new - hy_old) + Z0*eta_x/2(hy_new + hy_old) = kappa_y/dt(hy_dot_new - hy_dot_old) + Z0*eta_y/2(hy_dot_new + hy_dot_old)
-        Hy[:,:] = (1.0 / (kappa_x[:-1, :] / dt + Z0 * eta_x[:-1, :] / 2.0)) * (
-            (kappa_x[:-1, :] / dt - Z0 * eta_x[:-1, :] / 2.0) * Hy + 
-            (kappa_y[:-1, :] / dt) * (Hy_dot - Hy_dot_old) + 
-            (Z0 * eta_y[:-1, :] / 2.0) * (Hy_dot + Hy_dot_old)
-        )
+        # Update Hy:
+        Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old)) / beta_xp_hy
 
-    
+        # ---- UPDATE ELECTRIC FIELD ----:
+        curl_h = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx_d[1:-1, None] - \
+                 (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / dy_d[None, 1:-1]
+
+        # Update E°°z:
+        Ez_ddot_old = Ez_ddot.copy()
+        coef_n = (1.0 / dt - sigma / (2.0 * alpha_p))
+        coef_p = (1.0 / dt + sigma / (2.0 * alpha_p))
+        coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
+        Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
+
+        # add source to E°°z:
+        source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
+        Ez_ddot[x0, y0] += source_val
+
+        # Update Jc:
+        Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
+                          sigma * (Ez_ddot[1:-1, 1:-1] + \
+                                   Ez_ddot_old[1:-1, 1:-1])) / alpha_p
+
+        # Update E°z:
+        Ez_dot_old = Ez_dot.copy()
+        Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
+                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / dt) / beta_xp[1:-1, 1:-1]
+
+        # Update Ez:
+        Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
+                          beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
+
+
 
 
 
@@ -182,18 +182,14 @@ if boolse:
         t = (it-1)*dt
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
-
-        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sig)**2)
-        
-        Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
-        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot)   # propagate over dt
+        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t,it)
         recorder[it] = Ez[x1,y1] # Store field at recorder
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-0.02*A, vmax=0.02*A),
+            ax.imshow(Ez.T * Z0, vmin=-50*A, vmax=50*A),
             # ax.imshow(p_ref.T, vmin=-0.02*A, vmax=0.02*A),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
