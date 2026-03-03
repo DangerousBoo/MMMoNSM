@@ -67,8 +67,8 @@ if boolse:
     def Updater(Ez, Hx, Hy):
         # Update electric field
         Ez[1:-1, 1:-1] = S_ez[1:-1, 1:-1] * Ez[1:-1, 1:-1] + C_ez[1:-1, 1:-1] * (
-                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx_d[1:-1, None] - 
-                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy_d[None, 1:-1])
+                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) - 
+                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]))
         
         # PEC unnecessary since we are only updating the interior points
         # Ez[0, :] = 0  # PEC
@@ -101,8 +101,8 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
 
-        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2)
-
+        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sig)**2)
+        
         Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
         Updater(Ez, Hx, Hy)   # propagate over dt
         recorder[it] = Ez[x1,y1] # Store field at recorder
