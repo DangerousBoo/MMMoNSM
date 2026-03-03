@@ -12,9 +12,9 @@ dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
 dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
 dx_d = (dx[:-1] + dx[1:]) / 2.0
 dy_d = (dy[:-1] + dy[1:]) / 2.0
-# Add the "Half-Cells" at the boundaries to make them (nx-1,1) and (1,ny-1) for the update equations
-# dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
-# dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
+# Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
+dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
+dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
 
 c = 3e8  # Speed of light in vacuum (m/s)
 
@@ -24,8 +24,9 @@ eps_z[int(nx/2):-1, int(ny/2):-1]*=2
 
 
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-mu_x = mu0 * np.ones((nx-1, ny))  # Permeability array (H/m)
-mu_y = mu0 * np.ones((nx, ny-1))  # Permeability array (H/m)
+mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
+mu_x = (mu[:, :-1] + mu[:, 1:]) / 2.0
+mu_y = (mu[:-1, :] + mu[1:, :]) / 2.0
 
 sigma = np.zeros((nx, ny))  # Conductivity array (S/m)
 
@@ -49,10 +50,10 @@ x1 = int(nx/4) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
 # Constants for update equations
-C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2)
-S_ez = (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2) / (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2)
-C_hx = (dt * dx_d[None, :]) / (dy[:, None] * mu_x) 
-C_hy = (dt * dy_d[:, None]) / (dx[None, :] * mu_y)
+C_ez = (1 / (dx_d[:, None] * dy_d[None, :]) ) / (eps_z/dt - sigma/2)
+S_ez = (eps_z/dt - sigma/2) / (eps_z/dt - sigma/2)
+C_hx = (dt * dx_d[:, None]) / (dy[None, :] * mu_x) 
+C_hy = (dt * dy_d[None, :]) / (dx[:, None] * mu_y)
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
@@ -60,14 +61,14 @@ boolse=(ant.lower() == 'y')
 if boolse:
     # Initialize the staggered fields 
     Ez = np.zeros((nx, ny))  # Electric field in z direction
-    Hx = np.zeros((nx-1, ny-1))  # Magnetic field in x direction
-    Hy = np.zeros((nx-1, ny-1))  # Magnetic field in y direction
+    Hx = np.zeros((nx, ny))  # Magnetic field in x direction
+    Hy = np.zeros((nx, ny))  # Magnetic field in y direction
 
     def Updater(Ez, Hx, Hy):
         # Update electric field
-        Ez[1:-1, 1:-1] = S_ez * Ez[1:-1, 1:-1] + C_ez * (
-                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx_d - 
-                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy_d)
+        Ez[1:-1, 1:-1] = S_ez[1:-1, 1:-1] * Ez[1:-1, 1:-1] + C_ez[1:-1, 1:-1] * (
+                (Hy[1:-1, 1:-1] - Hy[0:-2, 1:-1]) / dx_d[1:-1, None] - 
+                (Hx[1:-1, 1:-1] - Hx[1:-1, 0:-2]) / dy_d[None, 1:-1])
         
         # PEC unnecessary since we are only updating the interior points
         # Ez[0, :] = 0  # PEC
@@ -97,7 +98,6 @@ if boolse:
 
     for it in range(0, nt):
         t = (it-1)*dt
-        print(t)
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
 
