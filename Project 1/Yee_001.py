@@ -49,10 +49,10 @@ x1 = int(nx/4) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
 # Constants for update equations
-C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps_z/dt - sigma/2)
-S_ez = (eps_z/dt - sigma/2) / (eps_z/dt - sigma/2)
-C_hx = (dt * dx_d[None, :]) / (dy * mu_x) 
-C_hy = (dt * dy_d[:, None]) / (dx * mu_y)
+C_ez = (1 / (dx_d[None, :] * dy_d[:, None]) ) / (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2)
+S_ez = (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2) / (eps_z[1:-1, 1:-1]/dt - sigma[1:-1, 1:-1]/2)
+C_hx = (dt * dx_d[None, :]) / (dy[:, None] * mu_x) 
+C_hy = (dt * dy_d[:, None]) / (dx[None, :] * mu_y)
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
