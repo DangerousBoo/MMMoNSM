@@ -6,24 +6,42 @@ from IPython.display import HTML
 ################################################################################################################################################
 #                                                           Parameters:                                                       
 ################################################################################################################################################
+
+
+# Constants
+c = 299792458 # Speed of light in vacuum (m/s)
+epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
+mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
+
+# Source = sin(2*pi*fc*(t-t0)) * exp(-(t-t0)**2/(2*sig_t**2))
+lam_c = 1 # Wavelength of the modulated sine (m)
+A = 1.0  # Amplitude of the source
+f_c = c/lam_c  # Frequency of the source (Hz)
+a = 3 # Amount of sigmas between fc and 0 in frequency domain
+sig_t = a/(2*np.pi*f_c)  # Standard deviation of the source (s)
+t0 = 3*sig_t  # Time delay of the source (s)
+
 nx, ny = 100, 100  # Number of grid points in x,y direction
-L = 1.0  # Length of the domain in meters
-dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
-dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
+
+dx_0 = lam_c/(30+30*a) # 30 cells / wavelength for minimal wavelength present
+
+dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
+dy = np.full(ny-1, dx_0)  # Spacing between Ey nodes
+dx_internal = (dx[:-1] + dx[1:]) / 2.0
+dy_internal = (dy[:-1] + dy[1:]) / 2.0
+# Add the "Half-Cells" at the boundaries to make them (nx-1,1) and (1,ny-1) for the update equations
+dx_d = np.concatenate((dx_internal, [dx[-1]/2]))
+dy_d = np.concatenate((dy_internal, [dy[-1]/2]))
+
 dx_d = (dx[:-1] + dx[1:]) / 2.0
 dy_d = (dy[:-1] + dy[1:]) / 2.0
 # Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
 dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
 dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
 
-c = 3e8  # Speed of light in vacuum (m/s)
-
-epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
 eps_z = epsilon0 * np.ones((nx,ny))  # Permittivity array (F/m)
 eps_z[int(nx/2):-1, int(ny/2):-1]*=2
 
-
-mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
 mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
 mu_x = (mu[:, :-1] + mu[:, 1:]) / 2.0
 mu_y = (mu[:-1, :] + mu[1:, :]) / 2.0
@@ -35,12 +53,6 @@ sigma = np.zeros((nx, ny))  # Conductivity array (S/m)
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 1000  # Number of time steps
-
-# Some source parameters
-A = 1.0  # Amplitude of the source
-fc = 1e9  # Frequency of the source (Hz)
-sig = 1/(2*fc)  # Standard deviation of the source (s)
-t0 = 3*sig  # Time delay of the source (s)
     
 # Source position           # TEMPORARY: source & recorder not matched to grid!!!
 x0 = int(nx/2)  # Source x position (grid index)
@@ -101,7 +113,7 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
 
-        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sig)**2)
+        bron = A*np.sin(2*np.pi*f_c*(t-t0))*np.exp(-1/2*((t-t0)/sig_t)**2)
         
         Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
         Updater(Ez, Hx, Hy)   # propagate over dt
