@@ -101,9 +101,9 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
 
-        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2) # maybe change to sine down the line?
+        bron = A*np.cos(2*np.pi*fc*(t-t0))*np.exp(-1/2*((t-t0)/sigma)**2)
 
-        Ez[x0,y0] = Ez[x0,y0]  # add source to field
+        Ez[x0,y0] = Ez[x0,y0] + bron # add source to field
         Updater(Ez, Hx, Hy)   # propagate over dt
         recorder[it] = Ez[x1,y1] # Store field at recorder
 
