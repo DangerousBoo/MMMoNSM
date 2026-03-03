@@ -152,6 +152,7 @@ if boolse:
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
         Ez[x0,y0] += source_val
 
+        Ez[3*x1,50:100] = 0
 
 
 
