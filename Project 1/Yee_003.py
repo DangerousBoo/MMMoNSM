@@ -112,27 +112,26 @@ if boolse:
         Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
 
         # Update Hx:
-        Hx[:, :] = (beta_z * Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old)) / beta_z
+        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z
 
         # Update H°y:
         Hy_dot_old = Hy_dot.copy() 
         Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z)
 
         # Update Hy:
-        Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old)) / beta_xp_hy
+        Hy[:, :] = Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) / beta_xp_hy
+
+
+
 
         # ---- UPDATE ELECTRIC FIELD ----:
         curl_h = (Hy[1:,1:-1] - Hy[:-1,1:-1]) / dx_d[1:-1,None] \
                 - (Hx[1:-1,1:] - Hx[1:-1,:-1]) / dy_d[None,1:-1]
-
-
-        
-
         
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
-        coef_n = (1.0 / dt - sigma / (2.0 * alpha_p))
-        coef_p = (1.0 / dt + sigma / (2.0 * alpha_p))
+        coef_n = (1.0 / (c * dt) - Z0 * sigma / (2.0 * alpha_p))
+        coef_p = (1.0 / (c * dt) + Z0 * sigma / (2.0 * alpha_p))
         coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
         Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
 
@@ -143,7 +142,7 @@ if boolse:
         # Update E°z:
         Ez_dot_old = Ez_dot.copy()
         Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
-                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / dt) / beta_xp[1:-1, 1:-1]
+                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (c * dt)) / beta_xp[1:-1, 1:-1]
 
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
