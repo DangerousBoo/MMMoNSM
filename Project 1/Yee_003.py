@@ -145,15 +145,12 @@ if boolse:
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
+        
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
         Ez[x0,y0] += source_val
 
         Ez[50,50:70] = 0
         Ez[50,80:150] = 0
-        Ez[-50,50:70] = 0
-        Ez[-50,80:150] = 0
-        Ez[50:150,50] = 0
-        Ez[50:150,-50] = 0
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -171,19 +168,18 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t)
-        recorder[it] = Ez[x1,y1] # Store field at recorder
+        recorder[it] = Ez[x1,y1]
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-Ez.max(), vmax=Ez.max()),
+            ax.imshow(Ez.T, vmin=-A/Z0, vmax=A/Z0),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
         movie.append(artists)
-    my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000,
-                                    blit=True)
+    my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000,blit=True)
     plt.show()
 
 
