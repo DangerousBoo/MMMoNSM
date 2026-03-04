@@ -125,6 +125,10 @@ if boolse:
         curl_h = (Hy[1:,1:-1] - Hy[:-1,1:-1]) / dx_d[1:-1,None] \
                 - (Hx[1:-1,1:] - Hx[1:-1,:-1]) / dy_d[None,1:-1]
 
+
+        
+
+        
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
         coef_n = (1.0 / dt - sigma / (2.0 * alpha_p))
@@ -134,9 +138,8 @@ if boolse:
 
         # Update Jc:
         Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
-                          sigma * (Ez_ddot[1:-1, 1:-1] + \
-                                   Ez_ddot_old[1:-1, 1:-1])) / alpha_p
-
+                          sigma * Z0 * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
+        
         # Update E°z:
         Ez_dot_old = Ez_dot.copy()
         Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
@@ -148,9 +151,6 @@ if boolse:
         
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
         Ez[x0,y0] += source_val
-
-        Ez[50,50:70] = 0
-        Ez[50,80:150] = 0
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -174,7 +174,7 @@ if boolse:
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-A/Z0, vmax=A/Z0),
+            ax.imshow(Ez.T, vmin=-20*A/Z0, vmax=20*A/Z0),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
