@@ -62,7 +62,7 @@ dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 500  # Number of time steps
 
 # Some source parameters
-A = 1.0  # Amplitude of the source
+A = 10.0  # Amplitude of the source
 fc = 1e10  # Frequency of the source (Hz)
 sig = 1/(2*fc)  # Standard deviation of the source (s)
 t0 = 3*sig  # Time delay of the source (s)
@@ -149,7 +149,7 @@ if boolse:
                           beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
-        Ez[x0,y0] += source_val
+        Ez[x0,y0] -= source_val / coef_p[x0,y0]
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -167,13 +167,13 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t)
-        recorder[it] = Ez[x1,y1]
+        recorder[it] = Ez[x1,y1]*Z0
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-20*A/Z0, vmax=20*A/Z0),
+            ax.imshow(Ez.T, vmin=-A/(2 * Z0), vmax=A/(2 * Z0)),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
