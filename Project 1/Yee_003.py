@@ -100,14 +100,10 @@ ant = input("Do you want to see the Yee Simulation?: ")
 boolse=(ant.lower() == 'y')
 if boolse:
     # Initialize the staggered fields 
-    Ez = np.zeros((nx, ny))  # Electric field in z direction
-    Hx = np.zeros((nx, ny-1))  # Magnetic field in x direction
-    Hy = np.zeros((nx-1, ny))  # Magnetic field in y direction
-    Ez_dot = np.zeros((nx, ny))  # First auxiliary electric field
-    Ez_ddot = np.zeros((nx, ny))  # Second auxiliary electric field
+    Ez, Ez_dot, Ez_ddot = np.zeros((nx, ny)), np.zeros((nx, ny)), np.zeros((nx, ny))  # E in z direction
+    Hx, Hx_dot = np.zeros((nx, ny-1)), np.zeros((nx, ny-1))  # Magnetic field in x direction
+    Hy, Hy_dot = np.zeros((nx-1, ny)), np.zeros((nx-1, ny))  # Magnetic field in y direction
     Jc = np.zeros((nx, ny))  # Conduction current density
-    Hx_dot = np.zeros((nx, ny-1))  # Auxiliary magnetic field x
-    Hy_dot = np.zeros((nx-1, ny))  # Auxiliary magnetic field y
 
     def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot,t):
         # ---- UPDATE MAGNETIC FIELDS ----:
@@ -116,7 +112,7 @@ if boolse:
         Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
 
         # Update Hx:
-        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z
+        Hx[:, :] = (beta_z * Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old)) / beta_z
 
         # Update H°y:
         Hy_dot_old = Hy_dot.copy() 
@@ -152,9 +148,12 @@ if boolse:
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
         Ez[x0,y0] += source_val
 
-        Ez[3*x1,50:100] = 0
-
-
+        Ez[50,50:70] = 0
+        Ez[50,80:150] = 0
+        Ez[-50,50:70] = 0
+        Ez[-50,80:150] = 0
+        Ez[50:150,50] = 0
+        Ez[50:150,-50] = 0
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
