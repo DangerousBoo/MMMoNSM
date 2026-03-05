@@ -8,7 +8,23 @@ from scipy.fftpack import fft2
 #                                                           Parameters:                                                       
 ################################################################################################################################################
 # Some source parameters
+nx, ny = 400, 200  # Number of grid points in x,y direction
+n_w = 200
+
+
 c = 299792458 # Speed of light in vacuum (m/s)
+epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
+gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
+mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
+mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
+sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
+Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
+v_local = c / np.sqrt(epsilon_r)
+Z_local = Z0 / np.sqrt(epsilon_r)
+
+
+
+
 lam_c = 1 # Wavelength of the modulated sine (m)
 A = 1.0  # Amplitude of the source
 f_c = c/lam_c  # Frequency of the source (Hz)
@@ -21,19 +37,13 @@ dy_0 = lam_c / (30)
 dx_f = dx_0 / 4
 alpha = np.sqrt(2)
 n_f = int(np.ceil(np.log(dx_0/dx_f)/np.log(alpha)))
-n_w = 200
 
-nx, ny = 400, 200  # Number of grid points in x,y direction
-L = 1  # Length of the domain in meters
+
 dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
 dist = np.arange(-n_f + 1, n_f)
-
 dx[n_w - n_f + 1: n_w + n_f] = dx_f * alpha ** np.abs(dist) # Widen the spacing in the middle
-
-
 dy = np.full(ny-1, dy_0)  # Spacing between Ey nodes
 dy_f = dy_0
-# Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
 dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
 dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
 
@@ -44,9 +54,6 @@ p = 20
 m = 4 # Polynomial order for scaling
 eta_max = (m + 1) / (150 * np.pi * dx_0)  # Maximum stretching factor
 ksi_kappa_max = 3
-
-
-
 kappa_x = np.ones((nx, ny))
 kappa_y = np.ones((nx, ny))
 eta_x = np.zeros((nx, ny))
@@ -66,43 +73,26 @@ for i in range(p):
     eta_y[:, i], eta_y[:, ny-1-i] = val_eta, val_eta
 
 
-
-
-
-
-epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
-mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
-gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
-mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
-sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
-
-
-
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
-dt = CFL/(c*np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
+dt = CFL/(c * np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
 nt = 2500  # Number of time steps
-
-
 
 # s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
 # source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
 # plt.plot(s, source(s))
 # plt.show()
 
-# Source position           # TEMPORARY: sourcy
-# e & recorder not matched to grid!!!
+# Source
 x0 = int(50)  # Source x position (grid index)
 y0 = int(ny/2)  # Source y position (grid index)
 # Recorder position
 x1 = int(350) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
-
-beta_xp = kappa_x / (c * dt)  + Z0 * eta_x / 2.0
-beta_yp = kappa_y / (c * dt)  + Z0 * eta_y / 2.0
-beta_xm = kappa_x / (c * dt)  - Z0 * eta_x / 2.0
-beta_ym = kappa_y / (c * dt)  - Z0 * eta_y / 2.0
+beta_xp = kappa_x / (v_local * dt) + Z_local * eta_x / 2.0
+beta_yp = kappa_y / (v_local * dt) + Z_local * eta_y / 2.0
+beta_xm = kappa_x / (v_local * dt) - Z_local * eta_x / 2.0
+beta_ym = kappa_y / (v_local * dt) - Z_local * eta_y / 2.0
 # Interpolate beta coefficients to the Hx grid (midpoints in y)
 beta_yp_hx = (beta_yp[:, :-1] + beta_yp[:, 1:]) / 2.0
 beta_ym_hx = (beta_ym[:, :-1] + beta_ym[:, 1:]) / 2.0
@@ -115,7 +105,8 @@ beta_xm_hx = (beta_xm[:, :-1] + beta_xm[:, 1:]) / 2.0
 beta_xp_hy = (beta_xp[:-1, :] + beta_xp[1:, :]) / 2.0
 beta_xm_hy = (beta_xm[:-1, :] + beta_xm[1:, :]) / 2.0
 
-beta_z = 1.0 / (c * dt)
+beta_z_h = 1.0 / (c * dt)
+beta_z_e = 1.0 / (v_local * dt)
 alpha_p = 2.0 * gamma / dt + 1.0
 alpha_m = 2.0 * gamma / dt - 1.0
 
@@ -136,11 +127,11 @@ if boolse:
         Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
 
         # Update Hx:
-        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z
+        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z_h
 
         # Update H°y:
         Hy_dot_old = Hy_dot.copy() 
-        Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z)
+        Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z_h)
 
         # Update Hy:
         Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) ) / beta_xp_hy
@@ -154,23 +145,23 @@ if boolse:
         
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
-        coef_n = (1.0 / (c * dt) - Z0 * sigma / (2.0 * alpha_p))
-        coef_p = (1.0 / (c * dt) + Z0 * sigma / (2.0 * alpha_p))
+        coef_n = (1.0 / (v_local * dt) - Z_local * sigma / (2.0 * alpha_p))
+        coef_p = (1.0 / (v_local * dt) + Z_local * sigma / (2.0 * alpha_p))
         coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
-        Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
+        Ez_ddot[1:-1, 1:-1] = (coef_n[1:-1, 1:-1] * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p[1:-1, 1:-1]
 
         # Update Jc:
         Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
-                          sigma * Z0 * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
+                          sigma * Z_local * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
         
         # Update E°z:
         Ez_dot_old = Ez_dot.copy()
         Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
-                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (c * dt)) / beta_xp[1:-1, 1:-1]
+                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (v_local * dt)) / beta_xp[1:-1, 1:-1]
 
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
-                          beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
+                          beta_z_e[1:-1, 1:-1] * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
@@ -199,7 +190,7 @@ if boolse:
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot, t)
         recorder[it] = Ez[x1, y1]  # Store field at recorder
 
-        field_data = Z0 * Ez.T
+        field_data = Z_local * Ez.T
         quad = ax.pcolormesh(X, Y, field_data, 
                             vmin=v_min, vmax=v_max, 
                             shading='auto', cmap='RdBu_r', animated=True)
