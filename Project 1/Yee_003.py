@@ -62,7 +62,7 @@ dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 500  # Number of time steps
 
 # Some source parameters
-A = 1.0  # Amplitude of the source
+A = 10.0  # Amplitude of the source
 fc = 1e10  # Frequency of the source (Hz)
 sig = 1/(2*fc)  # Standard deviation of the source (s)
 t0 = 3*sig  # Time delay of the source (s)
@@ -117,27 +117,26 @@ if boolse:
         Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
 
         # Update Hx:
-        Hx[:, :] = (beta_z * Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old)) / beta_z
+        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z
 
         # Update H°y:
         Hy_dot_old = Hy_dot.copy() 
         Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z)
 
         # Update Hy:
-        Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old)) / beta_xp_hy
+        Hy[:, :] = Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) / beta_xp_hy
+
+
+
 
         # ---- UPDATE ELECTRIC FIELD ----:
         curl_h = (Hy[1:,1:-1] - Hy[:-1,1:-1]) / dx_d[1:-1,None] \
                 - (Hx[1:-1,1:] - Hx[1:-1,:-1]) / dy_d[None,1:-1]
-
-
-        
-
         
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
-        coef_n = (1.0 / dt - sigma / (2.0 * alpha_p))
-        coef_p = (1.0 / dt + sigma / (2.0 * alpha_p))
+        coef_n = (1.0 / (c * dt) - Z0 * sigma / (2.0 * alpha_p))
+        coef_p = (1.0 / (c * dt) + Z0 * sigma / (2.0 * alpha_p))
         coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
         Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
 
@@ -148,14 +147,14 @@ if boolse:
         # Update E°z:
         Ez_dot_old = Ez_dot.copy()
         Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
-                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / dt) / beta_xp[1:-1, 1:-1]
+                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (c * dt)) / beta_xp[1:-1, 1:-1]
 
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
         source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
-        Ez[x0,y0] += source_val
+        Ez[x0,y0] -= source_val / coef_p[x0,y0]
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -173,13 +172,13 @@ if boolse:
         timeseries[it, 0] = t
         print('%d/%d' % (it, nt))
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t)
-        recorder[it] = Ez[x1,y1]
+        recorder[it] = Ez[x1,y1]*Z0
 
         artists = [
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-20*A/Z0, vmax=20*A/Z0),
+            ax.imshow(Ez.T, vmin=-A/(2 * Z0), vmax=A/(2 * Z0)),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
