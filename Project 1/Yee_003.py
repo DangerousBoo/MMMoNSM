@@ -66,7 +66,12 @@ A = 1.0  # Amplitude of the source
 fc = 1e10  # Frequency of the source (Hz)
 sig = 1/(2*fc)  # Standard deviation of the source (s)
 t0 = 3*sig  # Time delay of the source (s)
-    
+
+s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
+source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
+plt.plot(s, source(s))
+plt.show()
+
 # Source position           # TEMPORARY: source & recorder not matched to grid!!!
 x0 = int(nx/2)  # Source x position (grid index)
 y0 = int(ny/2)  # Source y position (grid index)
