@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
 from IPython.display import HTML
 from scipy.fftpack import fft2
+from matplotlib.patches import Rectangle
 
 ################################################################################################################################################
 #                                                           Parameters:                                                       
@@ -14,18 +15,25 @@ n_w = 200
 
 c = 299792458 # Speed of light in vacuum (m/s)
 epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
-gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
+gamma = 0.0  # Scaling factor for conduction current (can be adjusted for stability
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
 mu_r = np.ones((nx, ny))  # Permeability array (H/m)
 epsilon_r = np.ones((nx, ny))
 sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
 
-t = 150
-e1 = 4.0  # e.g., Glass or dry soil
-x_start = n_w - (t // 2)
-x_end = n_w + (t // 2)
-epsilon_r[x_start:x_end, 100:200] = e1
+eps_clad = 1.98
+eps_core = 2.22
+t = 20
+L = 200
+x_start = int(n_w - (L // 2))
+x_end   = int(n_w + (L // 2))
+y_start = int(ny // 2 - 2 * t)
+epsilon_r[x_start:x_end, y_start:y_start+t] = eps_clad
+epsilon_r[x_start:x_end, y_start + t:y_start + 3*t] = eps_core
+epsilon_r[x_start:x_end, y_start + 3*t:y_start + 4*t] = eps_clad
+
+
 v_local = c / np.sqrt(epsilon_r)
 Z_local = Z0 / np.sqrt(epsilon_r)
 
@@ -36,9 +44,9 @@ a = 3 # Amount of sigmas between fc and 0 in frequency domain
 sig_t = a/(2*np.pi*f_c)  # Standard deviation of the source (s)
 t0 = 4*sig_t  # Time delay of the source (s)
 
-dx_0 = lam_c / (30)
-dy_0 = lam_c / (30)
-dx_f = dx_0 / 4
+dx_0 = lam_c / (20)
+dy_0 = lam_c / (20)
+dx_f = dx_0
 alpha = np.sqrt(2)
 n_f = int(np.ceil(np.log(dx_0/dx_f)/np.log(alpha)))
 
@@ -79,7 +87,8 @@ for i in range(p):
 
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c * np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
-nt = 1000  # Number of time steps
+nt = 500  # Number of time steps
+print(dt)
 
 # s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
 # source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
@@ -167,12 +176,13 @@ if boolse:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z_e[1:-1, 1:-1] * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
+        Ez[int(n_w - L/2 - 10),:int(ny//2 - 6 * t)] = 0  # PEC
+        Ez[int(n_w - L/2 - 10),int(ny//2 + 6 * t):] = 0  # PEC
+
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
         
-        # Ez[n_w,:ny//2 - 30] = 0  # PEC
-        # Ez[n_w,ny//2 -20 : ny//2 + 21] = 0  # PEC
-        # Ez[n_w,ny//2 + 31:] = 0  # PEC
+
 
     #---- plot of the animation ----
     timeseries = np.zeros((nt,1))
@@ -187,6 +197,13 @@ if boolse:
     v_min, v_max = -0.0001, 0.0001
     movie = []
 
+    wall_mask = np.zeros((nx, ny))
+    wall_x = int(n_w - L/2 - 10)
+    # Top part of the wall
+    wall_mask[wall_x, :int(ny//2 - 2*t)] = 1
+    # Bottom part of the wall
+    wall_mask[wall_x, int(ny//2 + 2*t):] = 1
+
     for it in range(nt):
         t = it * dt
         timeseries[it, 0] = t
@@ -198,7 +215,7 @@ if boolse:
         quad = ax.pcolormesh(X, Y, field_data, 
                             vmin=v_min, vmax=v_max, 
                             shading='auto', cmap='RdBu_r', animated=True)
-        
+
         # Plot Source and Recorder
         src, = ax.plot(nodes_x[x0], nodes_y[y0], 'wo', ms=5, fillstyle='none')
         rec, = ax.plot(nodes_x[x1], nodes_y[y1], 'yo', ms=5, fillstyle='none')
