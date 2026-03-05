@@ -2,14 +2,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
 from IPython.display import HTML
+from scipy.fftpack import fft2
 
 ################################################################################################################################################
 #                                                           Parameters:                                                       
 ################################################################################################################################################
+# Some source parameters
+c = 299792458 # Speed of light in vacuum (m/s)
+lam_c = 1 # Wavelength of the modulated sine (m)
+A = 1.0  # Amplitude of the source
+f_c = c/lam_c  # Frequency of the source (Hz)
+a = 3 # Amount of sigmas between fc and 0 in frequency domain
+sig_t = a/(2*np.pi*f_c)  # Standard deviation of the source (s)
+t0 = 5*sig_t  # Time delay of the source (s)
+
+dx_0 = lam_c/(30)
+dy_0 = lam_c/(30)
+
+
 nx, ny = 200, 200  # Number of grid points in x,y direction
 L = 1  # Length of the domain in meters
-dx = np.full(nx-1, L/(nx-1))  # Spacing between Ex nodes
-dy = np.full(ny-1, L/(ny-1))  # Spacing between Ey nodes
+dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
+dy = np.full(ny-1, dy_0)  # Spacing between Ey nodes
 # Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
 dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
 dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
@@ -17,10 +31,10 @@ dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 10
 
 
 # PML thickness in grid cells
-p = 15
+p = 20
 m = 4 # Polynomial order for scaling
-eta_max = (m + 1) / (150 * np.pi * dx[0])  # Maximum stretching factor
-ksi_kappa_max = 3.0
+eta_max = (m + 1) / (150 * np.pi * dx_0)  # Maximum stretching factor
+ksi_kappa_max = 100
 
 
 
@@ -47,7 +61,6 @@ for i in range(p):
 
 
 
-c = 3e8  # Speed of light in vacuum (m/s)
 epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
 Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
@@ -57,22 +70,19 @@ sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 
 
 
-CFL = 0.7  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
+CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
 nt = 500  # Number of time steps
 
-# Some source parameters
-A = 10.0  # Amplitude of the source
-fc = 1e10  # Frequency of the source (Hz)
-sig = 1/(2*fc)  # Standard deviation of the source (s)
-t0 = 3*sig  # Time delay of the source (s)
 
-s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
-source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
-plt.plot(s, source(s))
-plt.show()
 
-# Source position           # TEMPORARY: source & recorder not matched to grid!!!
+# s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
+# source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
+# plt.plot(s, source(s))
+# plt.show()
+
+# Source position           # TEMPORARY: sourcy
+# e & recorder not matched to grid!!!
 x0 = int(nx/2)  # Source x position (grid index)
 y0 = int(ny/2)  # Source y position (grid index)
 # Recorder position
@@ -153,8 +163,8 @@ if boolse:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
-        source_val = A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
-        Ez[x0,y0] -= source_val / coef_p[x0,y0]
+        source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
+        Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -178,7 +188,7 @@ if boolse:
             ax.text(0.5,1.05,'%d/%d' % (it, nt), 
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes, ),
-            ax.imshow(Ez.T, vmin=-A/(2 * Z0), vmax=A/(2 * Z0)),
+            ax.imshow(Z0 * Ez.T, vmin=-0.0001, vmax=0.0001),
             ax.plot(x0,y0,'ks',fillstyle="none")[0],
             ax.plot(x1,y1,'ro',fillstyle="none")[0],
             ]
@@ -190,3 +200,37 @@ if boolse:
 
 plt.plot(timeseries, recorder)        
 plt.show()
+
+def freqs(recorder, dt, c):
+    # number of samples
+    n = len(recorder)
+    n_zero_pad = 10*n
+    fs = 1.0 / dt
+    df = fs / (n+n_zero_pad)
+    freq = np.arange(n+n_zero_pad) * df
+    freq[0] = 1e-5
+
+    # wavenumber
+    k = 2 * np.pi * freq / c
+
+    # FFTs
+    fft  = np.fft.fft(recorder.flatten(), n+n_zero_pad)
+    return freq, k, fft
+
+
+def FreqPlot(dt,c,recorders):
+        freq, k, fft1 = freqs(recorders, dt, c)
+        plt.plot(2*np.pi/c*freq, np.abs(fft1))
+        plt.title(f'Recorder 1')
+        plt.ylabel('|E(k)|')
+        plt.grid(True)
+        plt.axvline(f_c, linestyle=':', linewidth=1)
+        plt.xlim(0, 2*np.pi/c*2*f_c)
+        plt.xlabel(r'$kd$ []')
+        plt.tight_layout()
+        plt.show()
+
+        return freq
+
+freq1, k, fft1 = freqs(recorder, dt, c)
+FreqPlot(dt,c,recorder)
