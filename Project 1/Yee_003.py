@@ -21,9 +21,9 @@ dy_0 = lam_c / (30)
 dx_f = dx_0 / 4
 alpha = np.sqrt(2)
 n_f = int(np.ceil(np.log(dx_0/dx_f)/np.log(alpha)))
-n_w = 150
+n_w = 200
 
-nx, ny = 200, 200  # Number of grid points in x,y direction
+nx, ny = 400, 200  # Number of grid points in x,y direction
 L = 1  # Length of the domain in meters
 dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
 dist = np.arange(-n_f + 1, n_f)
@@ -81,7 +81,7 @@ sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c*np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
-nt = 500  # Number of time steps
+nt = 2500  # Number of time steps
 
 
 
@@ -92,10 +92,10 @@ nt = 500  # Number of time steps
 
 # Source position           # TEMPORARY: sourcy
 # e & recorder not matched to grid!!!
-x0 = int(nx/2)  # Source x position (grid index)
+x0 = int(50)  # Source x position (grid index)
 y0 = int(ny/2)  # Source y position (grid index)
 # Recorder position
-x1 = int(nx/4) # Recorder x position (grid index)
+x1 = int(350) # Recorder x position (grid index)
 y1 = int(ny/2) # Recorder y position (grid index)
 
 
@@ -175,42 +175,45 @@ if boolse:
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
         
-        Ez[0, :] = 0  # PEC
+        Ez[n_w,:ny//2 - 30] = 0  # PEC
+        Ez[n_w,ny//2 -20 : ny//2 + 21] = 0  # PEC
+        Ez[n_w,ny//2 + 31:] = 0  # PEC
 
     #---- plot of the animation ----
-    fig, ax = plt.subplots()
-    plt.axis('equal')
-    plt.xlim([1, nx+1])
-    plt.ylim([1, ny+1])
-    movie = []
     timeseries = np.zeros((nt,1))
     recorder = np.zeros((nt,1))
-    recorder_ref = np.zeros((nt,1))
-    tmax = nt
     nodes_x = np.concatenate(([0], np.cumsum(dx)))
     nodes_y = np.concatenate(([0], np.cumsum(dy)))
     X, Y = np.meshgrid(nodes_x, nodes_y)
-    
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_aspect('equal')
+    ax.set_facecolor('black') # Helps see the wave if it's faint
+    v_min, v_max = -0.0001, 0.0001
+    movie = []
+
     for it in range(nt):
-        t = (it) * dt
+        t = it * dt
+        timeseries[it, 0] = t
+        print('%d/%d' % (it, nt))
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot, t)
+        recorder[it] = Ez[x1, y1]  # Store field at recorder
 
-        quad = ax.pcolormesh(X, Y, Z0 * Ez.T, vmin=-0.0001, vmax=0.0001, shading='auto', cmap='RdBu_r')
+        field_data = Z0 * Ez.T
+        quad = ax.pcolormesh(X, Y, field_data, 
+                            vmin=v_min, vmax=v_max, 
+                            shading='auto', cmap='RdBu_r', animated=True)
         
-        # Update source and recorder to physical positions
-        src_plot, = ax.plot(nodes_x[x0], nodes_y[y0], 'ks', fillstyle="none")
-        rec_plot, = ax.plot(nodes_x[x1], nodes_y[y1], 'ro', fillstyle="none")
-        
-        txt = ax.text(0.5, 1.05, f'Step: {it}/{nt} | Time: {t*1e9:.2f} ns', 
-                    ha="center", transform=ax.transAxes)
-        
-        movie.append([txt, quad, src_plot, rec_plot])
+        # Plot Source and Recorder
+        src, = ax.plot(nodes_x[x0], nodes_y[y0], 'wo', ms=5, fillstyle='none')
+        rec, = ax.plot(nodes_x[x1], nodes_y[y1], 'yo', ms=5, fillstyle='none')
+        txt = ax.text(0.5, 1.02, f'Step {it}/{nt}', transform=ax.transAxes, color='white', ha='center')
+        movie.append([quad, src, rec, txt])
 
-    # Note: ArtistAnimation with pcolormesh can be memory intensive for large nt
-    my_anim = ArtistAnimation(fig, movie, interval=50, blit=True)
+    ax.set_xlim(nodes_x.min(), nodes_x.max())
+    ax.set_ylim(nodes_y.min(), nodes_y.max())
+    ani = ArtistAnimation(fig, movie, interval=1, blit=True)
     plt.show()
-
-
 plt.plot(timeseries, recorder)        
 plt.show()
 
