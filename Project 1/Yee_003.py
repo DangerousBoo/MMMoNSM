@@ -20,15 +20,14 @@ mu_r = np.ones((nx, ny))  # Permeability array (H/m)
 epsilon_r = np.ones((nx, ny))
 sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
+
+t = 150
+e1 = 4.0  # e.g., Glass or dry soil
+x_start = n_w - (t // 2)
+x_end = n_w + (t // 2)
+epsilon_r[x_start:x_end, 100:200] = e1
 v_local = c / np.sqrt(epsilon_r)
 Z_local = Z0 / np.sqrt(epsilon_r)
-
-t = 10 
-epsilon_wall = 4.0  # e.g., Glass or dry soil
-x_start = n_w - (wall_thickness // 2)
-x_end = n_w + (wall_thickness // 2)
-epsilon_r[x_start:x_end, :] = epsilon_wall
-
 
 lam_c = 1 # Wavelength of the modulated sine (m)
 A = 1.0  # Amplitude of the source
@@ -80,7 +79,7 @@ for i in range(p):
 
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
 dt = CFL/(c * np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
-nt = 2500  # Number of time steps
+nt = 1000  # Number of time steps
 
 # s = np.linspace(0, 1e-9, 1000)  # Time array for source definition (s)
 # source = lambda t : A * np.cos(2*np.pi*fc*(t-t0)) * np.exp(-0.5*((t-t0)/sig)**2)
@@ -150,19 +149,19 @@ if boolse:
         
         # Update E°°z:
         Ez_ddot_old = Ez_ddot.copy()
-        coef_n = (1.0 / (v_local * dt) - Z_local * sigma / (2.0 * alpha_p))
-        coef_p = (1.0 / (v_local * dt) + Z_local * sigma / (2.0 * alpha_p))
+        coef_n = (1.0 / (v_local[1:-1, 1:-1] * dt) - Z_local[1:-1, 1:-1] * sigma / (2.0 * alpha_p))
+        coef_p = (1.0 / (v_local[1:-1, 1:-1] * dt) + Z_local[1:-1, 1:-1] * sigma / (2.0 * alpha_p))
         coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
-        Ez_ddot[1:-1, 1:-1] = (coef_n[1:-1, 1:-1] * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p[1:-1, 1:-1]
-
+        Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
+        
         # Update Jc:
         Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
-                          sigma * Z_local * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
+                          sigma * Z_local[1:-1, 1:-1] * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
         
         # Update E°z:
         Ez_dot_old = Ez_dot.copy()
         Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
-                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (v_local * dt)) / beta_xp[1:-1, 1:-1]
+                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (v_local[1:-1, 1:-1] * dt)) / beta_xp[1:-1, 1:-1]
 
         # Update Ez:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
@@ -171,9 +170,9 @@ if boolse:
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
         
-        Ez[n_w,:ny//2 - 30] = 0  # PEC
-        Ez[n_w,ny//2 -20 : ny//2 + 21] = 0  # PEC
-        Ez[n_w,ny//2 + 31:] = 0  # PEC
+        # Ez[n_w,:ny//2 - 30] = 0  # PEC
+        # Ez[n_w,ny//2 -20 : ny//2 + 21] = 0  # PEC
+        # Ez[n_w,ny//2 + 31:] = 0  # PEC
 
     #---- plot of the animation ----
     timeseries = np.zeros((nt,1))
@@ -195,7 +194,7 @@ if boolse:
         Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot, t)
         recorder[it] = Ez[x1, y1]  # Store field at recorder
 
-        field_data = Z_local * Ez.T
+        field_data = (Z_local * Ez).T
         quad = ax.pcolormesh(X, Y, field_data, 
                             vmin=v_min, vmax=v_max, 
                             shading='auto', cmap='RdBu_r', animated=True)
