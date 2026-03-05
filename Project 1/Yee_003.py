@@ -34,7 +34,7 @@ dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 10
 p = 20
 m = 4 # Polynomial order for scaling
 eta_max = (m + 1) / (150 * np.pi * dx_0)  # Maximum stretching factor
-ksi_kappa_max = 100
+ksi_kappa_max = 3
 
 
 
@@ -134,7 +134,7 @@ if boolse:
         Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z)
 
         # Update Hy:
-        Hy[:, :] = Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) / beta_xp_hy
+        Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) ) / beta_xp_hy
 
 
 
