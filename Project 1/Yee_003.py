@@ -16,13 +16,18 @@ c = 299792458 # Speed of light in vacuum (m/s)
 epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
 gamma = 1.0  # Scaling factor for conduction current (can be adjusted for stability
 mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-mu = mu0 * np.ones((nx, ny))  # Permeability array (H/m)
+mu_r = np.ones((nx, ny))  # Permeability array (H/m)
+epsilon_r = np.ones((nx, ny))
 sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
 v_local = c / np.sqrt(epsilon_r)
 Z_local = Z0 / np.sqrt(epsilon_r)
 
-
+t = 10 
+epsilon_wall = 4.0  # e.g., Glass or dry soil
+x_start = n_w - (wall_thickness // 2)
+x_end = n_w + (wall_thickness // 2)
+epsilon_r[x_start:x_end, :] = epsilon_wall
 
 
 lam_c = 1 # Wavelength of the modulated sine (m)
