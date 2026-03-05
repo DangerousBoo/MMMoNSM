@@ -14,16 +14,25 @@ A = 1.0  # Amplitude of the source
 f_c = c/lam_c  # Frequency of the source (Hz)
 a = 3 # Amount of sigmas between fc and 0 in frequency domain
 sig_t = a/(2*np.pi*f_c)  # Standard deviation of the source (s)
-t0 = 5*sig_t  # Time delay of the source (s)
+t0 = 4*sig_t  # Time delay of the source (s)
 
-dx_0 = lam_c/(30)
-dy_0 = lam_c/(30)
-
+dx_0 = lam_c / (30)
+dy_0 = lam_c / (30)
+dx_f = dx_0 / 4
+alpha = np.sqrt(2)
+n_f = int(np.ceil(np.log(dx_0/dx_f)/np.log(alpha)))
+n_w = 150
 
 nx, ny = 200, 200  # Number of grid points in x,y direction
 L = 1  # Length of the domain in meters
 dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
+dist = np.arange(-n_f + 1, n_f)
+
+dx[n_w - n_f + 1: n_w + n_f] = dx_f * alpha ** np.abs(dist) # Widen the spacing in the middle
+
+
 dy = np.full(ny-1, dy_0)  # Spacing between Ey nodes
+dy_f = dy_0
 # Add the "Half-Cells" at the boundaries to make them (nx,1) and (1,ny) for the update equations
 dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
 dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
@@ -71,7 +80,7 @@ sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
 
 
 CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
-dt = CFL/(c*np.sqrt((1/np.min(dx)**2)+(1/np.min(dy)**2))) # Time step (s)
+dt = CFL/(c*np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
 nt = 500  # Number of time steps
 
 
@@ -165,6 +174,8 @@ if boolse:
         
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
+        
+        Ez[0, :] = 0  # PEC
 
     #---- plot of the animation ----
     fig, ax = plt.subplots()
@@ -176,26 +187,28 @@ if boolse:
     recorder = np.zeros((nt,1))
     recorder_ref = np.zeros((nt,1))
     tmax = nt
+    nodes_x = np.concatenate(([0], np.cumsum(dx)))
+    nodes_y = np.concatenate(([0], np.cumsum(dy)))
+    X, Y = np.meshgrid(nodes_x, nodes_y)
+    
+    for it in range(nt):
+        t = (it) * dt
+        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot, t)
 
-    for it in range(0, nt):
-        t = (it-1)*dt
-        timeseries[it, 0] = t
-        print('%d/%d' % (it, nt))
-        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot,Hy_dot,t)
-        recorder[it] = Ez[x1,y1]*Z0
+        quad = ax.pcolormesh(X, Y, Z0 * Ez.T, vmin=-0.0001, vmax=0.0001, shading='auto', cmap='RdBu_r')
+        
+        # Update source and recorder to physical positions
+        src_plot, = ax.plot(nodes_x[x0], nodes_y[y0], 'ks', fillstyle="none")
+        rec_plot, = ax.plot(nodes_x[x1], nodes_y[y1], 'ro', fillstyle="none")
+        
+        txt = ax.text(0.5, 1.05, f'Step: {it}/{nt} | Time: {t*1e9:.2f} ns', 
+                    ha="center", transform=ax.transAxes)
+        
+        movie.append([txt, quad, src_plot, rec_plot])
 
-        artists = [
-            ax.text(0.5,1.05,'%d/%d' % (it, nt), 
-                        size=plt.rcParams["axes.titlesize"],
-                        ha="center", transform=ax.transAxes, ),
-            ax.imshow(Z0 * Ez.T, vmin=-0.0001, vmax=0.0001),
-            ax.plot(x0,y0,'ks',fillstyle="none")[0],
-            ax.plot(x1,y1,'ro',fillstyle="none")[0],
-            ]
-        movie.append(artists)
-    my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000,blit=True)
+    # Note: ArtistAnimation with pcolormesh can be memory intensive for large nt
+    my_anim = ArtistAnimation(fig, movie, interval=50, blit=True)
     plt.show()
-
 
 
 plt.plot(timeseries, recorder)        
