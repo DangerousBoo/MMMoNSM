@@ -1,11 +1,11 @@
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
-from scipy.fftpack import fft2
 from matplotlib.animation import FuncAnimation
 
 ################################################################################################################################################
-#                                                           Parameters:                                                       
+#                                                             Parameters:                                                       
 ################################################################################################################################################
 class SimulationConfig:
     """Handles all physical and numerical parameters."""
@@ -20,29 +20,29 @@ class SimulationConfig:
         self.y_gap_bot = self.ny // 2 + self.d // 2 # Gridpoint of the bottom gap edge
 
         # Physical Constants
-        self.c = 299792458
-        self.epsilon0 = 8.854e-12
-        self.mu0 = 4 * np.pi * 1e-7
-        self.gamma = 0.0
-        self.sigma = np.zeros((self.nx-2, self.ny-2))
-        self.Z0 = np.sqrt(self.mu0 / self.epsilon0)
+        self.c          = 299792458
+        self.epsilon0   = 8.854e-12
+        self.mu0        = 4 * np.pi * 1e-7
+        self.gamma      = 0.0
+        self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
 
         # Material Properties
-        self.eps_clad = 2.218
-        self.eps_core = 2.22
-        self.epsilon_r = np.ones((self.nx, self.ny))
+        self.eps_clad   = 2.218
+        self.eps_core   = 2.22
+        self.epsilon_r  = np.ones((self.nx, self.ny))
+        self.sigma      = np.zeros((self.nx-2, self.ny-2))
         self.setup_waveguide()
         
         self.v_local = self.c / np.sqrt(self.epsilon_r)
         self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
 
         # Source Parameters
-        self.lam_c = 1.0
-        self.f_c = self.c / self.lam_c
-        self.A = 1.0
-        self.a = 3 # Amount of sigmas between fc and 0 in frequency domain
-        self.sig_t = self.a / (2 * np.pi * self.f_c)
-        self.t0 = 4 * self.sig_t
+        self.lam_c  = 1.0
+        self.f_c    = self.c / self.lam_c
+        self.A      = 1.0
+        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
+        self.sig_t  = self.a / (2 * np.pi * self.f_c)
+        self.t0     = 4 * self.sig_t
 
         # Grid Spacing (Non-uniform x)
         self.dx_0 = self.lam_c / 25
@@ -148,7 +148,7 @@ class YeeSolver:
         cfg = self.cfg
         # Magnetic Field Update
         Hx_dot_old = self.Hx_dot.copy()
-        self.Hx_dot = (self.byp_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) / cfg.dy[None, :]) / self.byp_hx
+        self.Hx_dot = (self.bym_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) / cfg.dy[None, :]) / self.byp_hx
         self.Hx += (self.bxp_hx * self.Hx_dot - self.bxm_hx * Hx_dot_old) / self.bz_h
 
         Hy_dot_old = self.Hy_dot.copy()
@@ -180,12 +180,14 @@ class YeeSolver:
         self.Ez[cfg.x0, cfg.y0] -= cfg.dx[cfg.x0] * cfg.dy[cfg.y0] * src / self.coef_p[cfg.x0-1, cfg.y0-1]
 
 ################################################################################################################################################
-#                                                          Animation:
+#                                                             Animation:
 ################################################################################################################################################
 def run_simulation():
     config = SimulationConfig()
     solver = YeeSolver(config)
     
+    history_frames = config.nt // 3
+    field_history = np.zeros((history_frames, config.ny, config.nx))
     recorder_plane = np.zeros((config.nt, config.ny))
     timeseries = np.linspace(0, config.nt * config.dt, config.nt)
 
@@ -197,26 +199,39 @@ def run_simulation():
         X, Y = np.meshgrid(nodes_x, nodes_y)
         
         fig, ax = plt.subplots(figsize=(8, 6))
+        ax.set_xlabel('X position (m)')
+        ax.set_ylabel('Y position (m)')
         ax.set_facecolor('black')
+        ax.set_aspect('equal')
         movie = []
-
-        for it in range(config.nt):
+        
+        for it in tqdm(range(config.nt), desc="Running Simulation"):
             t = it * config.dt
             solver.step(t)
+            if it % 5 == 0:
+                field_history[it // 5] = (config.Z_local * solver.Ez).T
             recorder_plane[it, :] = solver.Ez[config.x1, :]
 
-            if it % 5 == 0: # Speed up animation generation
-                field_data = (config.Z_local * solver.Ez).T
-                quad = ax.pcolormesh(X, Y, field_data, vmin=-1e-4, vmax=1e-4, shading='auto', cmap='RdBu_r')
-                src, = ax.plot(nodes_x[config.x0], nodes_y[config.y0], 'wo', ms=5, fillstyle='none')
-                txt = ax.text(0.5, 1.02, f'Step {it}/{config.nt}', transform=ax.transAxes, color='white', ha='center')
-                movie.append([quad, src, txt])
+
+        quad = ax.pcolormesh(X, Y, field_history[0], shading='auto', cmap='RdBu_r', vmin=-0.0001, vmax=0.0001)
+        txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
+
+        def update_frame(i):
+            quad.set_array(field_history[i].ravel())
+            current_step = i * 5
+            txt.set_text(f'Step {current_step}/{config.nt} | Time: {current_step * config.dt * 1e9:.2f} ns')
+            
+            return quad, txt
         
-        ani = ArtistAnimation(fig, movie, interval=1, blit=True)
+        # Interval=20 means 50 frames per second. Adjust as needed.
+        ani = FuncAnimation(fig, update_frame, frames=history_frames, interval=50, blit=True)
+        
+        plt.tight_layout()
         plt.show()
+
     else:
         # Run silently
-        for it in range(config.nt):
+        for it in tqdm(range(config.nt), desc="Running Simulation"):
             solver.step(it * config.dt)
             recorder_plane[it, :] = solver.Ez[config.x1, :]
 
@@ -240,6 +255,7 @@ if __name__ == "__main__":
     
     ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1, label='Cladding')
     ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1, label='Core')
+    ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1, label='Cladding')
     ax.legend()
     
     def animate_intensity(i):
@@ -247,5 +263,5 @@ if __name__ == "__main__":
         ax.set_title(f'Intensity Profile | t = {i * cfg.dt * 1e9:.2f} ns')
         return line,
 
-    ani_int = FuncAnimation(fig, animate_intensity, frames=range(400, cfg.nt, 2), interval=50)
+    ani_int = FuncAnimation(fig, animate_intensity, frames=range(250, cfg.nt, 2), interval=100)
     plt.show()
