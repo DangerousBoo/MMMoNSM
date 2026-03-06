@@ -54,8 +54,8 @@ class SimulationConfig:
         # Grid Spacing (Non-uniform x)
         self.dx_0 = self.lam_c / 25
         self.dy_0 = self.lam_c / 25
-        self.dx_f = self.dx_0 / 4
-        self.dy_f = self.dy_0 / self.eps_core
+        self.dx_f = self.dx_0 / 1
+        self.dy_f = self.dy_0 / 1 # / self.eps_core
         self.dx = np.full(self.nx - 1, self.dx_0)
         self.dy = np.full(self.ny - 1, self.dy_0)
         
@@ -66,15 +66,17 @@ class SimulationConfig:
         nf_y     = int(np.ceil(np.log(self.dy_0 / self.dy_f) / np.log(alpha)))
         dist_x   = np.arange(-nf_x + 1, nf_x)
         dist_y   = np.arange(0, nf_y)
-        print(nf_y)
+        
         if len(dist_x) > 0:
-            self.dx[self.n_w - nf_x + 1: self.n_w + nf_x] = self.dx_0 * alpha ** np.abs(dist_x)
+            self.dx[self.n_w - nf_x + 1: self.n_w + nf_x] = self.dx_f * alpha ** np.abs(dist_x)
+            self.dx[self.n_w] = self.dx_f
         if len(dist_y) > 0:
             ys = int(self.ny // 2 - 2 * self.d)
-            self.dy[ys - nf_y : ys] = self.dy_0 * alpha ** np.abs(dist_y)
-            self.dy[ys : ys + 4 * self.d] = self.dy_f
-            self.dy[ys + 4 * self.d : ys + 4 * self.d + nf_y] = self.dy_0 * (1 - alpha) ** np.abs(dist_y)
-
+            ye = ys + 4 * self.d
+            rev_dist = np.arange(nf_y)[::-1]
+            self.dy[ys - nf_y : ys] = self.dy_f * alpha ** rev_dist
+            self.dy[ys : ye] = self.dy_f
+            self.dy[ye : ye + nf_y] = self.dy_f * alpha ** np.arange(nf_y)
 
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
@@ -121,7 +123,7 @@ class YeeSolver:
 
     def init_pml(self):
         p, m = 20, 4
-        eta_max = (m + 1) / (150 * np.pi * self.cfg.dx_0)
+        eta_max = (m + 1) / (150 * np.pi * self.cfg.dx_f)
         ksi_k_max = 3
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
@@ -247,7 +249,7 @@ class SimulationRunner:
         }
 
     @staticmethod
-    def plot_2d_animation(results, interval=50):
+    def plot_2d_animation(results, interval=100):
         """Triggers the 2D Field Animation."""
         cfg = results["config"]
         hist = results["history"]
@@ -263,19 +265,19 @@ class SimulationRunner:
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
                              shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
-        txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
+        time_text = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
 
         def update(i):
             frame_data = (hist[i] * cfg.Z_local).T
             quad.set_array(frame_data.ravel())
-            txt.set_text(f'Step {i*5}/{cfg.nt} | {i*5*cfg.dt*1e9:.2f} ns')
-            return quad, txt
+            time_text.set_text(f'Step {i*5}/{cfg.nt} | {i*5*cfg.dt*1e9:.2f} ns')
+            return quad, time_text
 
         ani = FuncAnimation(fig, update, frames=len(hist), interval=interval, blit=True)
         plt.show()
 
     @staticmethod
-    def plot_1d_intensity(results, start_frame=750):
+    def plot_1d_intensity(results, interval=50):
         """Triggers the 1D Intensity Animation at the recorder plane."""
         cfg = results["config"]
         rec = results["recorder"]
@@ -292,20 +294,70 @@ class SimulationRunner:
         ax.axvspan(nodes_y[cfg.y_start          ], nodes_y[cfg.y_start +   cfg.d], color='yellow', alpha=0.1)
         ax.axvspan(nodes_y[cfg.y_start +   cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue'  , alpha=0.1)
         ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1)
+        time_text = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontweight='bold')
 
         def update(i):
             line.set_data(nodes_y, rec[i, :]**2)
-            ax.set_title(f'Intensity | t = {i * cfg.dt * 1e9:.3f} ns', color='black')
-            return line, ax.title
+            time_text.set_text(f'Intensity | t = {i * cfg.dt * 1e9:.3f} ns')
+            return line, time_text
 
-        ani = FuncAnimation(fig, update, frames=range(start_frame, cfg.nt, 2), interval=50, blit=True)
+        ani = FuncAnimation(fig, update, frames=range(3 * cfg.nt // 4, cfg.nt, 2), interval = interval, blit=True)
+        plt.show()
+
+    @staticmethod
+    def plot_grid_spacing(results):
+        """Visualizes the dx and dy spacing to verify refinement."""
+        cfg = results["config"]
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        
+        # Plot DX spacing
+        ax1.plot(cfg.dx, 'o-', markersize=2, label='dx spacing')
+        ax1.set_title("X-Grid Spacing (dx)")
+        ax1.set_xlabel("Cell Index (i)")
+        ax1.set_ylabel("Spacing (m)")
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot DY spacing
+        ax2.plot(cfg.dy, 'o-', markersize=2, color='orange', label='dy spacing')
+        ax2.set_title("Y-Grid Spacing (dy)")
+        ax2.set_xlabel("Cell Index (j)")
+        ax2.set_ylabel("Spacing (m)")
+        ax2.grid(True, alpha=0.3)
+        
+        # Highlight waveguide region in dy plot
+        ys = int(cfg.ny // 2 - 2 * cfg.d)
+        ye = ys + 4 * cfg.d
+        ax2.axvspan(ys, ye, color='blue', alpha=0.1, label='Waveguide Area')
+        ax2.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def plot_mesh(results, zoom_x=(400, 600), zoom_y=None):
+        """Plots the actual grid lines (the mesh) to see the refinement."""
+        cfg = results["config"]
+        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.vlines(nodes_x, ymin=nodes_y.min(), ymax=nodes_y.max(), colors='black', lw=0.5, alpha=0.5)
+        ax.hlines(nodes_y, xmin=nodes_x.min(), xmax=nodes_x.max(), colors='blue', lw=0.5, alpha=0.5)
+
+        ax.set_title("FDTD Mesh Visualization")
+        ax.set_xlabel("X-position (m)")
+        ax.set_ylabel("Y-position (m)")
+        ax.legend()
         plt.show()
 
     @classmethod
-    def run_full_analysis(cls, **kwargs):
+    def run_full_analysis(cls, speed=40, **kwargs):
         data = cls.execute(**kwargs)
-        cls.plot_2d_animation(data)
-        cls.plot_1d_intensity(data)
+        ms_interval = int(1000 / speed)
+        cls.plot_2d_animation(data, interval=ms_interval)
+        cls.plot_1d_intensity(data, interval=ms_interval)
+        cls.plot_grid_spacing(data)
+        cls.plot_mesh(data)
         return data
 
 
@@ -314,5 +366,5 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
-    results = SimulationRunner.run_full_analysis(nt=1000, d=45)
+    results = SimulationRunner.run_full_analysis(speed = 200 , nt=200, d=30)
 
