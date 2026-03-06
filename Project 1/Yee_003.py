@@ -24,14 +24,14 @@ Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
 
 eps_clad = 1.98
 eps_core = 2.22
-t = 20
+d = 20
 L = 200
 x_start = int(n_w - (L // 2))
 x_end   = int(n_w + (L // 2))
-y_start = int(ny // 2 - 2 * t)
-epsilon_r[x_start:x_end, y_start:y_start+t] = eps_clad
-epsilon_r[x_start:x_end, y_start + t:y_start + 3*t] = eps_core
-epsilon_r[x_start:x_end, y_start + 3*t:y_start + 4*t] = eps_clad
+y_start = int(ny // 2 - 2 * d)
+epsilon_r[x_start:x_end, y_start:y_start+d] = eps_clad
+epsilon_r[x_start:x_end, y_start + d:y_start + 3*d] = eps_core
+epsilon_r[x_start:x_end, y_start + 3*d:y_start + 4*d] = eps_clad
 
 
 v_local = c / np.sqrt(epsilon_r)
@@ -72,9 +72,9 @@ eta_x = np.zeros((nx, ny))
 eta_y = np.zeros((nx, ny))
 
 for i in range(p):
-    d = (p - i) / p  # Normalized dist.
-    val_k = 1.0 + (ksi_kappa_max - 1.0) * (d**m)
-    val_eta = eta_max * (d**m)
+    d_pml = (p - i) / p  # Normalized dist.
+    val_k = 1.0 + (ksi_kappa_max - 1.0) * (d_pml**m)
+    val_eta = eta_max * (d_pml**m)
     
     # Left/Right boundaries (x-stretching)
     kappa_x[i, :], kappa_x[nx-1-i, :] = val_k, val_k
@@ -176,8 +176,8 @@ if boolse:
         Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
                           beta_z_e[1:-1, 1:-1] * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
         
-        Ez[int(n_w - L/2 - 10),:int(ny//2 - 6 * t)] = 0  # PEC
-        Ez[int(n_w - L/2 - 10),int(ny//2 + 6 * t):] = 0  # PEC
+        Ez[int(n_w - L/2),:int(ny//2 - 1/2 * d)] = 0  # PEC
+        Ez[int(n_w - L/2),int(ny//2 + 1 * d):] = 0  # PEC
 
         source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
         Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0,y0]
@@ -200,9 +200,9 @@ if boolse:
     wall_mask = np.zeros((nx, ny))
     wall_x = int(n_w - L/2 - 10)
     # Top part of the wall
-    wall_mask[wall_x, :int(ny//2 - 2*t)] = 1
+    wall_mask[wall_x, :int(ny//2 - 2*d)] = 1
     # Bottom part of the wall
-    wall_mask[wall_x, int(ny//2 + 2*t):] = 1
+    wall_mask[wall_x, int(ny//2 + 2*d):] = 1
 
     for it in range(nt):
         t = it * dt
