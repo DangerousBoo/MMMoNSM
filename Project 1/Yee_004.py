@@ -54,26 +54,35 @@ class SimulationConfig:
         # Grid Spacing (Non-uniform x)
         self.dx_0 = self.lam_c / 25
         self.dy_0 = self.lam_c / 25
-        self.dx_f = self.dx_0
-        self.dy_f = self.dy_0
+        self.dx_f = self.dx_0 / 4
+        self.dy_f = self.dy_0 / self.eps_core
         self.dx = np.full(self.nx - 1, self.dx_0)
         self.dy = np.full(self.ny - 1, self.dy_0)
         
         # Grid Refinement Logic
-        alpha   = np.sqrt(2)
+        alpha    = np.sqrt(2)
         self.n_w = self.nx - self.L
-        n_f     = int(np.ceil(np.log(self.dx_0 / self.dx_f) / np.log(alpha)))
-        dist    = np.arange(-n_f + 1, n_f)
+        nf_x     = int(np.ceil(np.log(self.dx_0 / self.dx_f) / np.log(alpha)))
+        nf_y     = int(np.ceil(np.log(self.dy_0 / self.dy_f) / np.log(alpha)))
+        dist_x   = np.arange(-nf_x + 1, nf_x)
+        dist_y   = np.arange(0, nf_y)
+        print(nf_y)
+        if len(dist_x) > 0:
+            self.dx[self.n_w - nf_x + 1: self.n_w + nf_x] = self.dx_0 * alpha ** np.abs(dist_x)
+        if len(dist_y) > 0:
+            ys = int(self.ny // 2 - 2 * self.d)
+            self.dy[ys - nf_y : ys] = self.dy_0 * alpha ** np.abs(dist_y)
+            self.dy[ys : ys + 4 * self.d] = self.dy_f
+            self.dy[ys + 4 * self.d : ys + 4 * self.d + nf_y] = self.dy_0 * (1 - alpha) ** np.abs(dist_y)
 
-        if len(dist) > 0:
-            self.dx[self.n_w - n_f + 1: self.n_w + n_f] = self.dx_0 * alpha ** np.abs(dist)
+
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
 
         # Time Stepping
         CFL = 1.0
-        self.dt  = CFL / (self.c * np.sqrt((1/self.dx_0**2) + (1/self.dy_0**2)))
+        self.dt  = CFL / (self.c * np.sqrt((1/self.dx_f**2) + (1/self.dy_f**2)))
 
     def setup_waveguide(self):
         self.L = 200
@@ -199,68 +208,6 @@ class YeeSolver:
         self.Ez[cfg.x0, cfg.y0] -= cfg.dx[cfg.x0] * cfg.dy[cfg.y0] * src / self.coef_p[cfg.x0-1, cfg.y0-1]
 
 ################################################################################################################################################
-#                                                             Animation:
-################################################################################################################################################
-def run_simulation(config=None):
-    if config is None:
-        config = SimulationConfig() # Use defaults if nothing is passed
-    config = SimulationConfig()
-    solver = YeeSolver(config)
-    
-    interval = 2
-    frame = config.nt // interval
-    field_history = np.zeros((frame, config.nx, config.ny))
-    recorder_plane = np.zeros((config.nt, config.ny))
-    timeseries = np.linspace(0, config.nt * config.dt, config.nt)
-
-    show_yee = input("Do you want to see the Yee Simulation? (y/n): ").lower() == 'y'
-
-    if show_yee:
-        nodes_x = np.concatenate(([0], np.cumsum(config.dx)))
-        nodes_y = np.concatenate(([0], np.cumsum(config.dy)))
-        X, Y = np.meshgrid(nodes_x, nodes_y)
-        
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.set_xlabel('X position (m)')
-        ax.set_ylabel('Y position (m)')
-        ax.set_facecolor('black')
-        ax.set_aspect('equal')
-        movie = []
-        
-        for it in tqdm(range(config.nt), desc="Running Simulation"):
-            t = it * config.dt
-            solver.step(t)
-            if it % interval == 0:
-                field_history[it // interval] = solver.Ez
-            recorder_plane[it, :] = solver.Ez[config.x1, :]
-
-        quad = ax.pcolormesh(X, Y, field_history[0].T, shading='nearest', cmap='RdBu_r', vmin=-0.0001, vmax=0.0001)
-        txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
-
-        def update_frame(i):
-            frame_data = (field_history[i] * config.Z_local).T
-            quad.set_array(frame_data.ravel())
-            actual_step = i * interval
-            sim_time_ns = actual_step * config.dt * 1e9
-            
-            txt.set_text(f'Step {actual_step}/{config.nt} | Time: {sim_time_ns:.2f} ns')
-            
-            return quad, txt
-    
-        ani = FuncAnimation(fig, update_frame, frames=frame, interval=40, blit=True)
-        
-        plt.tight_layout()
-        plt.show()
-
-    else:
-        # Run silently
-        for it in tqdm(range(config.nt), desc="Running Simulation"):
-            solver.step(it * config.dt)
-            recorder_plane[it, :] = solver.Ez[config.x1, :]
-
-    return config, timeseries, recorder_plane
-
-################################################################################################################################################
 #                                                          Simulation Runner:
 ################################################################################################################################################
 class SimulationRunner:
@@ -313,7 +260,7 @@ class SimulationRunner:
         ax.set_aspect('equal')
         ax.set_facecolor('black')
         
-        # Initial plot (Transposed for Matplotlib Y,X indexing)
+        # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
                              shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
         txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
@@ -341,10 +288,11 @@ class SimulationRunner:
         ax.set_xlim(nodes_y.min(), nodes_y.max())
         ax.set_ylim(0, max_int * 1.2)
         
-        # Waveguide overlays
-        ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1)
-        ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1)
-        
+        # Waveguide:
+        ax.axvspan(nodes_y[cfg.y_start          ], nodes_y[cfg.y_start +   cfg.d], color='yellow', alpha=0.1)
+        ax.axvspan(nodes_y[cfg.y_start +   cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue'  , alpha=0.1)
+        ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1)
+
         def update(i):
             line.set_data(nodes_y, rec[i, :]**2)
             ax.set_title(f'Intensity | t = {i * cfg.dt * 1e9:.3f} ns', color='black')
@@ -355,54 +303,16 @@ class SimulationRunner:
 
     @classmethod
     def run_full_analysis(cls, **kwargs):
-        """The 'Ultimate One-Liner': Simulates and then shows all plots."""
         data = cls.execute(**kwargs)
         cls.plot_2d_animation(data)
         cls.plot_1d_intensity(data)
         return data
 
+
+
+
+
+
 if __name__ == "__main__":
-    results = SimulationRunner.run_full_analysis(nt=1001, d=15)
+    results = SimulationRunner.run_full_analysis(nt=1000, d=45)
 
-
-# # --- Execution ---
-# if __name__ == "__main__":
-#     cfg, times, recorder = run_simulation()
-    
-#     # 1D plot at center of plane
-#     plt.figure()
-#     plt.plot(times, recorder[:, cfg.ny // 2])
-#     plt.title("Field at Recorder Plane (Center)")
-#     plt.show()
-
-#     # Intensity Animation
-#     fig, ax = plt.subplots(figsize=(8, 4))
-#     nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
-#     max_int = np.max(recorder**2)
-#     line, = ax.plot([], [], color='red', lw=2)
-    
-#     ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1, label='Cladding')
-#     ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1, label='Core')
-#     ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1, label='Cladding')
-#     ax.legend()
-#     ax.set_xlim(nodes_y.min(), nodes_y.max())
-#     ax.set_ylim(0, max_int * 1.2)
-
-#     def init():
-#             line.set_data([], [])
-#             return line,
-
-#     def animate_intensity(i):
-#         # recorder is (nt, ny)
-#         intensity = recorder[i, :]**2
-#         line.set_data(nodes_y, intensity)
-#         ax.set_title(f'Intensity Profile | t = {i * cfg.dt * 1e9:.2f} ns (Step {i})')
-#         return line, ax.title
-
-#     # Using blit=True makes it much smoother
-#     ani_int = FuncAnimation(fig, animate_intensity, init_func=init,
-#                             frames=range(750, cfg.nt, 2), 
-#                             interval=50, blit=True)
-    
-#     plt.tight_layout()
-#     plt.show()
