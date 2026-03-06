@@ -7,117 +7,152 @@ from matplotlib.animation import FuncAnimation
 ################################################################################################################################################
 #                                                           Parameters:                                                       
 ################################################################################################################################################
-# Some source parameters
-nx, ny = 600, 200  # Number of grid points in x,y direction
-n_w = nx - 200
-d = 20
-L = 200
-x_wall = int(n_w - L // 2)
-x0, y0, x1 = 50, ny // 2, nx - 50
-y_gap_top = ny // 2 - d // 2 
-y_gap_bot = ny // 2 + d // 2 
+class SimulationConfig:
+    """Handles all physical and numerical parameters."""
+    def __init__(self):
+        # Grid Dimensions
+        self.nx, self.ny = 600, 200 # Number of grid points in x,y direction
+        self.L = 200 # Length of the waveguide in grid points
+        self.d = 20 # Half the width of the waveguide core in grid points
+        self.x0, self.y0 = 50, self.ny // 2 # Source location
+        self.x1 = self.nx - 50 # Recorder location
+        self.y_gap_top = self.ny // 2 - self.d // 2 # Gridpoint of the top gap edge
+        self.y_gap_bot = self.ny // 2 + self.d // 2 # Gridpoint of the bottom gap edge
 
+        # Physical Constants
+        self.c = 299792458
+        self.epsilon0 = 8.854e-12
+        self.mu0 = 4 * np.pi * 1e-7
+        self.gamma = 0.0
+        self.sigma = np.zeros((self.nx-2, self.ny-2))
+        self.Z0 = np.sqrt(self.mu0 / self.epsilon0)
 
-c = 299792458 # Speed of light in vacuum (m/s)
-epsilon0 = 8.854e-12  # Permittivity of free space (F/m)
-gamma = 0.0  # Scaling factor for conduction current (can be adjusted for stability
-mu0 = 4*np.pi*1e-7  # Permeability of free space (H/m)
-mu_r = np.ones((nx, ny))  # Permeability array (H/m)
-epsilon_r = np.ones((nx, ny))
-sigma = np.zeros((nx-2, ny-2))  # Conductivity array (S/m)
-Z0 = np.sqrt(mu0/epsilon0)  # Impedance of free space (Ohms)
-
-eps_clad = 2.218
-eps_core = 2.22
-x_start = int(n_w - (L // 2))
-y_start = int(ny // 2 - 2 * d)
-epsilon_r[x_start:, y_start       :y_start +   d] = eps_clad
-epsilon_r[x_start:, y_start +   d :y_start + 3*d] = eps_core
-epsilon_r[x_start:, y_start + 3*d :y_start + 4*d] = eps_clad
-
-
-v_local = c / np.sqrt(epsilon_r)
-Z_local = Z0 / np.sqrt(epsilon_r)
-
-lam_c = 1 # Wavelength of the modulated sine (m)
-A = 1.0  # Amplitude of the source
-f_c = c/lam_c  # Frequency of the source (Hz)
-a = 3 # Amount of sigmas between fc and 0 in frequency domain
-sig_t = a/(2*np.pi*f_c)  # Standard deviation of the source (s)
-t0 = 4*sig_t  # Time delay of the source (s)
-
-dx_0, dy_0  = lam_c / (25), lam_c / (25)
-dx_f = dx_0
-alpha = np.sqrt(2)
-n_f = int(np.ceil(np.log(dx_0/dx_f)/np.log(alpha)))
-
-
-dx = np.full(nx-1, dx_0)  # Spacing between Ex nodes
-dist = np.arange(-n_f + 1, n_f)
-dx[n_w - n_f + 1: n_w + n_f] = dx_f * alpha ** np.abs(dist) # Widen the spacing in the middle
-dy = np.full(ny-1, dy_0)  # Spacing between Ey nodes
-dy_f = dy_0
-dx_d = np.concatenate(([dx[0]/2], (dx[:-1] + dx[1:])/2, [dx[-1]/2])) # length 100
-dy_d = np.concatenate(([dy[0]/2], (dy[:-1] + dy[1:])/2, [dy[-1]/2])) # length 100
-
-
-CFL = 1  # Courant-Friedrichs-Lewy number (preferably as close to 1 as possible for stability/accuracy)
-dt = CFL/(c * np.sqrt((1/np.min(dx_f)**2)+(1/np.min(dy_f)**2))) # Time step (s)
-nt = 1500  # Number of time steps
-
-
-# PML parameters
-if  True:
-    # PML thickness in grid cells
-    p = 20
-    m = 4 # Polynomial order for scaling
-    eta_max = (m + 1) / (150 * np.pi * dx_0)  # Maximum stretching factor
-    ksi_kappa_max = 3
-    kappa_x = np.ones((nx, ny))
-    kappa_y = np.ones((nx, ny))
-    eta_x = np.zeros((nx, ny))
-    eta_y = np.zeros((nx, ny))
-
-    for i in range(p):
-        d_pml = (p - i) / p  # Normalized dist.
-        val_k = 1.0 + (ksi_kappa_max - 1.0) * (d_pml**m)
-        val_eta = eta_max * (d_pml**m)
+        # Material Properties
+        self.eps_clad = 2.218
+        self.eps_core = 2.22
+        self.epsilon_r = np.ones((self.nx, self.ny))
+        self.setup_waveguide()
         
-        # Left/Right boundaries (x-stretching)
-        kappa_x[i, :], kappa_x[nx-1-i, :] = val_k, val_k
-        eta_x[i, :], eta_x[nx-1-i, :] = val_eta, val_eta
+        self.v_local = self.c / np.sqrt(self.epsilon_r)
+        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
+
+        # Source Parameters
+        self.lam_c = 1.0
+        self.f_c = self.c / self.lam_c
+        self.A = 1.0
+        self.a = 3 # Amount of sigmas between fc and 0 in frequency domain
+        self.sig_t = self.a / (2 * np.pi * self.f_c)
+        self.t0 = 4 * self.sig_t
+
+        # Grid Spacing (Non-uniform x)
+        self.dx_0 = self.lam_c / 25
+        self.dy_0 = self.lam_c / 25
+        self.dx_f = self.dx_0
+        self.dy_f = self.dy_0
+        self.dx = np.full(self.nx - 1, self.dx_0)
+        self.dy = np.full(self.ny - 1, self.dy_0)
         
-        # Top/Bottom boundaries (y-stretching)
-        kappa_y[:, i], kappa_y[:, ny-1-i] = val_k, val_k
-        eta_y[:, i], eta_y[:, ny-1-i] = val_eta, val_eta
+        # Grid Refinement Logic
+        alpha   = np.sqrt(2)
+        self.n_w = self.nx - self.L
+        n_f     = int(np.ceil(np.log(self.dx_0 / self.dx_f) / np.log(alpha)))
+        dist    = np.arange(-n_f + 1, n_f)
+
+        if len(dist) > 0:
+            self.dx[self.n_w - n_f + 1: self.n_w + n_f] = self.dx_0 * alpha ** np.abs(dist)
+
+        self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
+        self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
+
+        # Time Stepping
+        CFL = 1.0
+        self.dt  = self.CFL / (self.c * np.sqrt((1/self.dx_0**2) + (1/self.dy_0**2)))
+        self.nt  = 1500
+
+    def setup_waveguide(self):
+        self.L = 200
+        self.x_start = int(self.nx - self.L) # Start of the waveguide in x direction
+        self.y_start = int(self.ny // 2 - 2 * self.d) # Start of the waveguide in y direction
+        self.epsilon_r[self.x_start:, self.y_start            : self.y_start +   self.d] = self.eps_clad
+        self.epsilon_r[self.x_start:, self.y_start +   self.d : self.y_start + 3*self.d] = self.eps_core
+        self.epsilon_r[self.x_start:, self.y_start + 3*self.d : self.y_start + 4*self.d] = self.eps_clad
+
+################################################################################################################################################
+#                                                          Yee Solver Class:
+################################################################################################################################################
+class YeeSolver:
+    def __init__(self, config):
+        self.cfg = config
+        self.init_fields()
+        self.init_pml()
+        self.init_coefficients()
+
+    def init_fields(self):
+        self.Ez      = np.zeros((self.cfg.nx, self.cfg.ny))
+        self.Ez_dot  = np.zeros((self.cfg.nx, self.cfg.ny))
+        self.Ez_ddot = np.zeros((self.cfg.nx, self.cfg.ny))
+        self.Jc      = np.zeros((self.cfg.nx, self.cfg.ny))
+        self.Hx      = np.zeros((self.cfg.nx, self.cfg.ny-1))
+        self.Hx_dot  = np.zeros((self.cfg.nx, self.cfg.ny-1))
+        self.Hy      = np.zeros((self.cfg.nx-1, self.cfg.ny))
+        self.Hy_dot  = np.zeros((self.cfg.nx-1, self.cfg.ny))
+
+    def init_pml(self):
+        p, m = 20, 4
+        eta_max = (m + 1) / (150 * np.pi * self.cfg.dx_0)
+        ksi_k_max = 3
+        
+        self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
+        self.etax, self.etay = np.zeros((self.cfg.nx, self.cfg.ny)), np.zeros((self.cfg.nx, self.cfg.ny))
+
+        for i in range(p):
+            d_pml = (p - i) / p
+            val_k = 1.0 + (ksi_k_max - 1.0) * (d_pml**m)
+            val_eta = eta_max * (d_pml**m)
+
+            self.kx[i, :], self.kx[-1-i, :] = val_k, val_k
+            self.ky[:, i], self.ky[:, -1-i] = val_k, val_k
+            self.etax[i, :], self.etax[-1-i, :] = val_eta, val_eta
+            self.etay[:, i], self.etay[:, -1-i] = val_eta, val_eta
+
+    def init_coefficients(self):
+        cfg = self.cfg
+        # Update coefficients
+        self.bxp = self.kx / (cfg.v_local * cfg.dt) + cfg.Z_local * self.etax / 2.0
+        self.byp = self.ky / (cfg.v_local * cfg.dt) + cfg.Z_local * self.etay / 2.0
+        self.bxm = self.kx / (cfg.v_local * cfg.dt) - cfg.Z_local * self.etax / 2.0
+        self.bym = self.ky / (cfg.v_local * cfg.dt) - cfg.Z_local * self.etay / 2.0
+
+        # Interpolations
+        self.byp_hx = (self.byp[:, :-1] + self.byp[:, 1:]) / 2.0
+        self.bym_hx = (self.bym[:, :-1] + self.bym[:, 1:]) / 2.0
+        self.byp_hy = (self.byp[:-1, :] + self.byp[1:, :]) / 2.0
+        self.bym_hy = (self.bym[:-1, :] + self.bym[1:, :]) / 2.0
+        self.bxp_hx = (self.bxp[:, :-1] + self.bxp[:, 1:]) / 2.0
+        self.bxm_hx = (self.bxm[:, :-1] + self.bxm[:, 1:]) / 2.0
+        self.bxp_hy = (self.bxp[:-1, :] + self.bxp[1:, :]) / 2.0
+        self.bxm_hy = (self.bxm[:-1, :] + self.bxm[1:, :]) / 2.0
+
+        self.bz_h = 1.0 / (cfg.c * cfg.dt)
+        self.bz_e = 1.0 / (cfg.v_local * cfg.dt)
+        self.ap = 2.0 * cfg.gamma / cfg.dt + 1.0
+        self.am = 2.0 * cfg.gamma / cfg.dt - 1.0
+
+        sub_v = cfg.v_local[1:-1, 1:-1]
+        sub_z = cfg.Z_local[1:-1, 1:-1]
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * self.sigma / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * self.sigma / (2.0 * self.ap))
+        self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
 
-# Precompute coefficients for the update equations
-if True:
-    beta_xp = kappa_x / (v_local * dt) + Z_local * eta_x / 2.0
-    beta_yp = kappa_y / (v_local * dt) + Z_local * eta_y / 2.0
-    beta_xm = kappa_x / (v_local * dt) - Z_local * eta_x / 2.0
-    beta_ym = kappa_y / (v_local * dt) - Z_local * eta_y / 2.0
-    # Interpolate beta coefficients to the Hx grid (midpoints in y)
-    beta_yp_hx = (beta_yp[:, :-1] + beta_yp[:, 1:]) / 2.0
-    beta_ym_hx = (beta_ym[:, :-1] + beta_ym[:, 1:]) / 2.0
-    beta_yp_hy = (beta_yp[:-1, :] + beta_yp[1:, :]) / 2.0
-    beta_ym_hy = (beta_ym[:-1, :] + beta_ym[1:, :]) / 2.0
 
-    # Interpolate beta coefficients to the Hy grid (midpoints in x)
-    beta_xp_hx = (beta_xp[:, :-1] + beta_xp[:, 1:]) / 2.0
-    beta_xm_hx = (beta_xm[:, :-1] + beta_xm[:, 1:]) / 2.0
-    beta_xp_hy = (beta_xp[:-1, :] + beta_xp[1:, :]) / 2.0
-    beta_xm_hy = (beta_xm[:-1, :] + beta_xm[1:, :]) / 2.0
 
-    beta_z_h = 1.0 / (c * dt)
-    beta_z_e = 1.0 / (v_local * dt)
-    alpha_p = 2.0 * gamma / dt + 1.0
-    alpha_m = 2.0 * gamma / dt - 1.0
 
-    coef_n = (1.0 / (v_local[1:-1, 1:-1] * dt) - Z_local[1:-1, 1:-1] * sigma / (2.0 * alpha_p))
-    coef_p = (1.0 / (v_local[1:-1, 1:-1] * dt) + Z_local[1:-1, 1:-1] * sigma / (2.0 * alpha_p))
-    coef_j = 0.5 * (1.0 + alpha_m / alpha_p)
+
+
+
+
+
 
 
 ant = input("Do you want to see the Yee Simulation?: ")
