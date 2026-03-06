@@ -1,3 +1,5 @@
+from logging import config
+
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -9,9 +11,10 @@ from matplotlib.animation import FuncAnimation
 ################################################################################################################################################
 class SimulationConfig:
     """Handles all physical and numerical parameters."""
-    def __init__(self):
+    def __init__(self, **kwargs):
         # Grid Dimensions
         self.nx, self.ny = 600, 200 # Number of grid points in x,y direction
+        self.nt = 1000 # Number of time steps
         self.L = 200 # Length of the waveguide in grid points
         self.d = 20 # Half the width of the waveguide core in grid points
         self.x0, self.y0 = 50, self.ny // 2 # Source location
@@ -19,6 +22,10 @@ class SimulationConfig:
         self.y_gap_top = self.ny // 2 - self.d // 2 # Gridpoint of the top gap edge
         self.y_gap_bot = self.ny // 2 + self.d // 2 # Gridpoint of the bottom gap edge
 
+        # Give possibility to change parameters via kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        
         # Physical Constants
         self.c          = 299792458
         self.epsilon0   = 8.854e-12
@@ -67,7 +74,6 @@ class SimulationConfig:
         # Time Stepping
         CFL = 1.0
         self.dt  = CFL / (self.c * np.sqrt((1/self.dx_0**2) + (1/self.dy_0**2)))
-        self.nt  = 1500
 
     def setup_waveguide(self):
         self.L = 200
@@ -88,6 +94,8 @@ class YeeSolver:
         self.init_coefficients()
 
     def init_fields(self):
+        self.ix = slice(1,-1)
+        self.iy = slice(1,-1)
         self.Ez      = np.zeros((self.cfg.nx, self.cfg.ny))
         self.Ez_dot  = np.zeros((self.cfg.nx, self.cfg.ny))
         self.Ez_ddot = np.zeros((self.cfg.nx, self.cfg.ny))
@@ -96,6 +104,11 @@ class YeeSolver:
         self.Hx_dot  = np.zeros((self.cfg.nx, self.cfg.ny-1))
         self.Hy      = np.zeros((self.cfg.nx-1, self.cfg.ny))
         self.Hy_dot  = np.zeros((self.cfg.nx-1, self.cfg.ny))
+
+        self.Hx_dot_old = np.zeros_like(self.Hx_dot)
+        self.Hy_dot_old = np.zeros_like(self.Hy_dot)
+        self.Ez_ddot_old = np.zeros_like(self.Ez_ddot)
+        self.Ez_dot_old = np.zeros_like(self.Ez_dot)
 
     def init_pml(self):
         p, m = 20, 4
@@ -144,32 +157,38 @@ class YeeSolver:
         self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
+        self.inv_dx, self.inv_dy = 1.0 / cfg.dx, 1.0 / cfg.dy
+        self.inv_dx_d, self.inv_dy_d = 1.0 / cfg.dx_d, 1.0 / cfg.dy_d
+
+
     def step(self, t):
         cfg = self.cfg
-        # Magnetic Field Update
-        Hx_dot_old = self.Hx_dot.copy()
-        self.Hx_dot = (self.bym_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) / cfg.dy[None, :]) / self.byp_hx
-        self.Hx += (self.bxp_hx * self.Hx_dot - self.bxm_hx * Hx_dot_old) / self.bz_h
+        ix, iy = self.ix, self.iy
 
-        Hy_dot_old = self.Hy_dot.copy()
-        self.Hy_dot += (self.Ez[1:, :] - self.Ez[:-1, :]) / (cfg.dx[:, None] * self.bz_h)
-        self.Hy = (self.bxm_hy * self.Hy + (self.byp_hy * self.Hy_dot - self.bym_hy * Hy_dot_old)) / self.bxp_hy
+        # Magnetic Field Update
+        self.Hx_dot_old[:] = self.Hx_dot
+        self.Hx_dot = (self.bym_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) * self.inv_dy[None, :]) / self.byp_hx
+        self.Hx += (self.bxp_hx * self.Hx_dot - self.bxm_hx * self.Hx_dot_old) / self.bz_h
+
+        self.Hy_dot_old[:] = self.Hy_dot
+        self.Hy_dot += (self.Ez[1:, :] - self.Ez[:-1, :]) * self.inv_dx[:, None] / self.bz_h
+        self.Hy = (self.bxm_hy * self.Hy + (self.byp_hy * self.Hy_dot - self.bym_hy * self.Hy_dot_old)) / self.bxp_hy
 
         # Electric Field Update
-        curl_h = (self.Hy[1:, 1:-1] - self.Hy[:-1, 1:-1]) / cfg.dx_d[1:-1, None] - \
-                 (self.Hx[1:-1, 1:] - self.Hx[1:-1, :-1]) / cfg.dy_d[None, 1:-1]
+        curl_h = (self.Hy[1:, iy] - self.Hy[:-1, iy]) * self.inv_dx_d[ix, None] - \
+                (self.Hx[ix, 1:] - self.Hx[ix, :-1]) * self.inv_dy_d[None, iy]
         
-        Ez_ddot_old = self.Ez_ddot.copy()
-        self.Ez_ddot[1:-1, 1:-1] = (self.coef_n * self.Ez_ddot[1:-1, 1:-1] - self.coef_j * self.Jc[1:-1, 1:-1] + curl_h) / self.coef_p
+        self.Ez_ddot_old[:] = self.Ez_ddot
+        self.Ez_ddot[ix, iy] = (self.coef_n * self.Ez_ddot[ix, iy] - self.coef_j * self.Jc[ix, iy] + curl_h) / self.coef_p
         
-        self.Jc[1:-1, 1:-1] = (self.am * self.Jc[1:-1, 1:-1] + cfg.sigma * cfg.Z_local[1:-1, 1:-1] * (self.Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / self.ap
+        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * (self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy])) / self.ap
         
-        Ez_dot_old = self.Ez_dot.copy()
-        self.Ez_dot[1:-1, 1:-1] = (self.bxm[1:-1, 1:-1] * self.Ez_dot[1:-1, 1:-1] + 
-                                   (self.Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (cfg.v_local[1:-1, 1:-1] * cfg.dt)) / self.bxp[1:-1, 1:-1]
+        self.Ez_dot_old[:] = self.Ez_dot
+        self.Ez_dot[ix, iy] = (self.bxm[ix, iy] * self.Ez_dot[ix, iy] + 
+                                   (self.Ez_ddot[ix, iy] - self.Ez_ddot_old[ix, iy]) / (cfg.v_local[ix, iy] * cfg.dt)) / self.bxp[ix, iy]
 
-        self.Ez[1:-1, 1:-1] = (self.bym[1:-1, 1:-1] * self.Ez[1:-1, 1:-1] + 
-                               self.bz_e[1:-1, 1:-1] * (self.Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / self.byp[1:-1, 1:-1]
+        self.Ez[ix, iy] = (self.bym[ix, iy] * self.Ez[ix, iy] + 
+                               self.bz_e[ix, iy] * (self.Ez_dot[ix, iy] - self.Ez_dot_old[ix, iy])) / self.byp[ix, iy]
         
         # Boundary Conditions (Wall)
         self.Ez[cfg.n_w, :cfg.y_gap_top] = 0
@@ -182,12 +201,15 @@ class YeeSolver:
 ################################################################################################################################################
 #                                                             Animation:
 ################################################################################################################################################
-def run_simulation():
+def run_simulation(config=None):
+    if config is None:
+        config = SimulationConfig() # Use defaults if nothing is passed
     config = SimulationConfig()
     solver = YeeSolver(config)
     
-    history_frames = config.nt // 3
-    field_history = np.zeros((history_frames, config.ny, config.nx))
+    interval = 2
+    frame = config.nt // interval
+    field_history = np.zeros((frame, config.nx, config.ny))
     recorder_plane = np.zeros((config.nt, config.ny))
     timeseries = np.linspace(0, config.nt * config.dt, config.nt)
 
@@ -208,23 +230,24 @@ def run_simulation():
         for it in tqdm(range(config.nt), desc="Running Simulation"):
             t = it * config.dt
             solver.step(t)
-            if it % 5 == 0:
-                field_history[it // 5] = (config.Z_local * solver.Ez).T
+            if it % interval == 0:
+                field_history[it // interval] = solver.Ez
             recorder_plane[it, :] = solver.Ez[config.x1, :]
 
-
-        quad = ax.pcolormesh(X, Y, field_history[0], shading='auto', cmap='RdBu_r', vmin=-0.0001, vmax=0.0001)
+        quad = ax.pcolormesh(X, Y, field_history[0].T, shading='nearest', cmap='RdBu_r', vmin=-0.0001, vmax=0.0001)
         txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
 
         def update_frame(i):
-            quad.set_array(field_history[i].ravel())
-            current_step = i * 5
-            txt.set_text(f'Step {current_step}/{config.nt} | Time: {current_step * config.dt * 1e9:.2f} ns')
+            frame_data = (field_history[i] * config.Z_local).T
+            quad.set_array(frame_data.ravel())
+            actual_step = i * interval
+            sim_time_ns = actual_step * config.dt * 1e9
+            
+            txt.set_text(f'Step {actual_step}/{config.nt} | Time: {sim_time_ns:.2f} ns')
             
             return quad, txt
-        
-        # Interval=20 means 50 frames per second. Adjust as needed.
-        ani = FuncAnimation(fig, update_frame, frames=history_frames, interval=50, blit=True)
+    
+        ani = FuncAnimation(fig, update_frame, frames=frame, interval=40, blit=True)
         
         plt.tight_layout()
         plt.show()
@@ -237,31 +260,149 @@ def run_simulation():
 
     return config, timeseries, recorder_plane
 
-# --- Execution ---
+################################################################################################################################################
+#                                                          Simulation Runner:
+################################################################################################################################################
+class SimulationRunner:
+    @staticmethod
+    def execute(**kwargs):
+        """
+        Runs the simulation with optional parameter overrides.
+        Example: results = SimulationRunner.execute(nt=2000, d=10)
+        """
+        # 1. Create config with possible overrides
+        config = SimulationConfig(**kwargs)
+        
+        # 2. Initialize Solver
+        solver = YeeSolver(config)
+        
+        # 3. Setup Data Storage
+        history_frames = int(np.ceil(config.nt / 3))
+        field_history = np.zeros((history_frames, config.nx, config.ny), dtype=np.float32)
+        recorder_plane = np.zeros((config.nt, config.ny), dtype=np.float32)
+        
+        # 4. Run Simulation Loop
+        for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
+            t = it * config.dt
+            solver.step(t)
+            
+            if it % 3 == 0:
+                field_history[it // 3] = solver.Ez
+            
+            recorder_plane[it, :] = solver.Ez[config.x1, :]
+            
+        # Return everything needed for plotting/analysis
+        return {
+            "config": config,
+            "history": field_history,
+            "recorder": recorder_plane,
+            "times": np.arange(config.nt) * config.dt
+        }
+
+    @staticmethod
+    def plot_2d_animation(results, interval=50):
+        """Triggers the 2D Field Animation."""
+        cfg = results["config"]
+        hist = results["history"]
+        
+        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        X, Y = np.meshgrid(nodes_x, nodes_y)
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.set_aspect('equal')
+        ax.set_facecolor('black')
+        
+        # Initial plot (Transposed for Matplotlib Y,X indexing)
+        quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
+                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
+        txt = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
+
+        def update(i):
+            frame_data = (hist[i] * cfg.Z_local).T
+            quad.set_array(frame_data.ravel())
+            txt.set_text(f'Step {i*5}/{cfg.nt} | {i*5*cfg.dt*1e9:.2f} ns')
+            return quad, txt
+
+        ani = FuncAnimation(fig, update, frames=len(hist), interval=interval, blit=True)
+        plt.show()
+
+    @staticmethod
+    def plot_1d_intensity(results, start_frame=750):
+        """Triggers the 1D Intensity Animation at the recorder plane."""
+        cfg = results["config"]
+        rec = results["recorder"]
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        
+        fig, ax = plt.subplots(figsize=(8, 4))
+        max_int = np.max(rec**2)
+        line, = ax.plot([], [], color='red', lw=2)
+        
+        ax.set_xlim(nodes_y.min(), nodes_y.max())
+        ax.set_ylim(0, max_int * 1.2)
+        
+        # Waveguide overlays
+        ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1)
+        ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1)
+        
+        def update(i):
+            line.set_data(nodes_y, rec[i, :]**2)
+            ax.set_title(f'Intensity | t = {i * cfg.dt * 1e9:.3f} ns', color='black')
+            return line, ax.title
+
+        ani = FuncAnimation(fig, update, frames=range(start_frame, cfg.nt, 2), interval=50, blit=True)
+        plt.show()
+
+    @classmethod
+    def run_full_analysis(cls, **kwargs):
+        """The 'Ultimate One-Liner': Simulates and then shows all plots."""
+        data = cls.execute(**kwargs)
+        cls.plot_2d_animation(data)
+        cls.plot_1d_intensity(data)
+        return data
+
 if __name__ == "__main__":
-    cfg, times, recorder = run_simulation()
-    
-    # 1D plot at center of plane
-    plt.figure()
-    plt.plot(times, recorder[:, cfg.ny // 2])
-    plt.title("Field at Recorder Plane (Center)")
-    plt.show()
+    results = SimulationRunner.run_full_analysis(nt=1001, d=15)
 
-    # Intensity Animation
-    fig, ax = plt.subplots(figsize=(8, 4))
-    nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
-    max_int = np.max(recorder**2)
-    line, = ax.plot([], [], color='red', lw=2)
-    
-    ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1, label='Cladding')
-    ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1, label='Core')
-    ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1, label='Cladding')
-    ax.legend()
-    
-    def animate_intensity(i):
-        line.set_data(nodes_y, recorder[i, :]**2)
-        ax.set_title(f'Intensity Profile | t = {i * cfg.dt * 1e9:.2f} ns')
-        return line,
 
-    ani_int = FuncAnimation(fig, animate_intensity, frames=range(250, cfg.nt, 2), interval=100)
-    plt.show()
+# # --- Execution ---
+# if __name__ == "__main__":
+#     cfg, times, recorder = run_simulation()
+    
+#     # 1D plot at center of plane
+#     plt.figure()
+#     plt.plot(times, recorder[:, cfg.ny // 2])
+#     plt.title("Field at Recorder Plane (Center)")
+#     plt.show()
+
+#     # Intensity Animation
+#     fig, ax = plt.subplots(figsize=(8, 4))
+#     nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+#     max_int = np.max(recorder**2)
+#     line, = ax.plot([], [], color='red', lw=2)
+    
+#     ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1, label='Cladding')
+#     ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1, label='Core')
+#     ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1, label='Cladding')
+#     ax.legend()
+#     ax.set_xlim(nodes_y.min(), nodes_y.max())
+#     ax.set_ylim(0, max_int * 1.2)
+
+#     def init():
+#             line.set_data([], [])
+#             return line,
+
+#     def animate_intensity(i):
+#         # recorder is (nt, ny)
+#         intensity = recorder[i, :]**2
+#         line.set_data(nodes_y, intensity)
+#         ax.set_title(f'Intensity Profile | t = {i * cfg.dt * 1e9:.2f} ns (Step {i})')
+#         return line, ax.title
+
+#     # Using blit=True makes it much smoother
+#     ani_int = FuncAnimation(fig, animate_intensity, init_func=init,
+#                             frames=range(750, cfg.nt, 2), 
+#                             interval=50, blit=True)
+    
+#     plt.tight_layout()
+#     plt.show()
