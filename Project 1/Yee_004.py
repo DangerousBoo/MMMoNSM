@@ -66,7 +66,7 @@ class SimulationConfig:
 
         # Time Stepping
         CFL = 1.0
-        self.dt  = self.CFL / (self.c * np.sqrt((1/self.dx_0**2) + (1/self.dy_0**2)))
+        self.dt  = CFL / (self.c * np.sqrt((1/self.dx_0**2) + (1/self.dy_0**2)))
         self.nt  = 1500
 
     def setup_waveguide(self):
@@ -140,193 +140,112 @@ class YeeSolver:
 
         sub_v = cfg.v_local[1:-1, 1:-1]
         sub_z = cfg.Z_local[1:-1, 1:-1]
-        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * self.sigma / (2.0 * self.ap))
-        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * self.sigma / (2.0 * self.ap))
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
+    def step(self, t):
+        cfg = self.cfg
+        # Magnetic Field Update
+        Hx_dot_old = self.Hx_dot.copy()
+        self.Hx_dot = (self.byp_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) / cfg.dy[None, :]) / self.byp_hx
+        self.Hx += (self.bxp_hx * self.Hx_dot - self.bxm_hx * Hx_dot_old) / self.bz_h
 
+        Hy_dot_old = self.Hy_dot.copy()
+        self.Hy_dot += (self.Ez[1:, :] - self.Ez[:-1, :]) / (cfg.dx[:, None] * self.bz_h)
+        self.Hy = (self.bxm_hy * self.Hy + (self.byp_hy * self.Hy_dot - self.bym_hy * Hy_dot_old)) / self.bxp_hy
 
-
-
-
-
-
-
-
-
-
-ant = input("Do you want to see the Yee Simulation?: ")
-boolse=(ant.lower() == 'y')
-if boolse:
-    # Initialize the staggered fields 
-    Ez, Ez_dot, Ez_ddot = np.zeros((nx, ny)), np.zeros((nx, ny)), np.zeros((nx, ny))  # E in z direction
-    Hx, Hx_dot = np.zeros((nx, ny-1)), np.zeros((nx, ny-1))  # Magnetic field in x direction
-    Hy, Hy_dot = np.zeros((nx-1, ny)), np.zeros((nx-1, ny))  # Magnetic field in y direction
-    Jc = np.zeros((nx, ny))  # Conduction current density
-
-    def Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot,t):
-        # ---- UPDATE MAGNETIC FIELDS ----:
-        # Update H°x:
-        Hx_dot_old = Hx_dot.copy()
-        Hx_dot[:, :] = (beta_ym_hx * Hx_dot - (Ez[:, 1:] - Ez[:, :-1]) / dy[None, :]) / beta_yp_hx
-
-        # Update Hx:
-        Hx[:, :] = Hx + (beta_xp_hx * Hx_dot - beta_xm_hx * Hx_dot_old) / beta_z_h
-
-        # Update H°y:
-        Hy_dot_old = Hy_dot.copy() 
-        Hy_dot[:, :] = Hy_dot + (Ez[1:, :] - Ez[:-1, :]) / (dx[:, None] * beta_z_h)
-
-        # Update Hy:
-        Hy[:, :] = (beta_xm_hy * Hy + (beta_yp_hy * Hy_dot - beta_ym_hy * Hy_dot_old) ) / beta_xp_hy
-
-
-        # ---- UPDATE ELECTRIC FIELD ----:
-        curl_h = (Hy[1:,1:-1] - Hy[:-1,1:-1]) / dx_d[1:-1,None] \
-                - (Hx[1:-1,1:] - Hx[1:-1,:-1]) / dy_d[None,1:-1]
+        # Electric Field Update
+        curl_h = (self.Hy[1:, 1:-1] - self.Hy[:-1, 1:-1]) / cfg.dx_d[1:-1, None] - \
+                 (self.Hx[1:-1, 1:] - self.Hx[1:-1, :-1]) / cfg.dy_d[None, 1:-1]
         
-        # Update E°°z:
-        Ez_ddot_old = Ez_ddot.copy()
-        Ez_ddot[1:-1, 1:-1] = (coef_n * Ez_ddot[1:-1, 1:-1] - coef_j * Jc[1:-1, 1:-1] + curl_h) / coef_p
+        Ez_ddot_old = self.Ez_ddot.copy()
+        self.Ez_ddot[1:-1, 1:-1] = (self.coef_n * self.Ez_ddot[1:-1, 1:-1] - self.coef_j * self.Jc[1:-1, 1:-1] + curl_h) / self.coef_p
         
-        # Update Jc:
-        Jc[1:-1, 1:-1] = (alpha_m * Jc[1:-1, 1:-1] + \
-                          sigma * Z_local[1:-1, 1:-1] * (Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / alpha_p
+        self.Jc[1:-1, 1:-1] = (self.am * self.Jc[1:-1, 1:-1] + cfg.sigma * cfg.Z_local[1:-1, 1:-1] * (self.Ez_ddot[1:-1, 1:-1] + Ez_ddot_old[1:-1, 1:-1])) / self.ap
         
-        # Update E°z:
-        Ez_dot_old = Ez_dot.copy()
-        Ez_dot[1:-1, 1:-1] = (beta_xm[1:-1, 1:-1] * Ez_dot[1:-1, 1:-1] + \
-                            (Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (v_local[1:-1, 1:-1] * dt)) / beta_xp[1:-1, 1:-1]
+        Ez_dot_old = self.Ez_dot.copy()
+        self.Ez_dot[1:-1, 1:-1] = (self.bxm[1:-1, 1:-1] * self.Ez_dot[1:-1, 1:-1] + 
+                                   (self.Ez_ddot[1:-1, 1:-1] - Ez_ddot_old[1:-1, 1:-1]) / (cfg.v_local[1:-1, 1:-1] * cfg.dt)) / self.bxp[1:-1, 1:-1]
 
-        # Update Ez:
-        Ez[1:-1, 1:-1] = (beta_ym[1:-1, 1:-1] * Ez[1:-1, 1:-1] + \
-                          beta_z_e[1:-1, 1:-1] * (Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / beta_yp[1:-1, 1:-1]
+        self.Ez[1:-1, 1:-1] = (self.bym[1:-1, 1:-1] * self.Ez[1:-1, 1:-1] + 
+                               self.bz_e[1:-1, 1:-1] * (self.Ez_dot[1:-1, 1:-1] - Ez_dot_old[1:-1, 1:-1])) / self.byp[1:-1, 1:-1]
         
-        Ez[x_wall, :y_gap_top] = 0
-        Ez[x_wall, y_gap_bot:] = 0
+        # Boundary Conditions (Wall)
+        self.Ez[cfg.n_w, :cfg.y_gap_top] = 0
+        self.Ez[cfg.n_w, cfg.y_gap_bot:] = 0
 
-        source_val = A * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
-        Ez[x0,y0] -= dx[x0] * dy[y0] * source_val / coef_p[x0 - 1,y0 - 1]
+        # Source
+        src = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
+        self.Ez[cfg.x0, cfg.y0] -= cfg.dx[cfg.x0] * cfg.dy[cfg.y0] * src / self.coef_p[cfg.x0-1, cfg.y0-1]
+
+################################################################################################################################################
+#                                                          Animation:
+################################################################################################################################################
+def run_simulation():
+    config = SimulationConfig()
+    solver = YeeSolver(config)
+    
+    recorder_plane = np.zeros((config.nt, config.ny))
+    timeseries = np.linspace(0, config.nt * config.dt, config.nt)
+
+    show_yee = input("Do you want to see the Yee Simulation? (y/n): ").lower() == 'y'
+
+    if show_yee:
+        nodes_x = np.concatenate(([0], np.cumsum(config.dx)))
+        nodes_y = np.concatenate(([0], np.cumsum(config.dy)))
+        X, Y = np.meshgrid(nodes_x, nodes_y)
         
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.set_facecolor('black')
+        movie = []
 
+        for it in range(config.nt):
+            t = it * config.dt
+            solver.step(t)
+            recorder_plane[it, :] = solver.Ez[config.x1, :]
 
-    #---- plot of the animation ----
-    timeseries = np.zeros((nt,1))
-    recorder_plane = np.zeros((nt, ny))
-    nodes_x = np.concatenate(([0], np.cumsum(dx)))
-    nodes_y = np.concatenate(([0], np.cumsum(dy)))
-    X, Y = np.meshgrid(nodes_x, nodes_y)
+            if it % 5 == 0: # Speed up animation generation
+                field_data = (config.Z_local * solver.Ez).T
+                quad = ax.pcolormesh(X, Y, field_data, vmin=-1e-4, vmax=1e-4, shading='auto', cmap='RdBu_r')
+                src, = ax.plot(nodes_x[config.x0], nodes_y[config.y0], 'wo', ms=5, fillstyle='none')
+                txt = ax.text(0.5, 1.02, f'Step {it}/{config.nt}', transform=ax.transAxes, color='white', ha='center')
+                movie.append([quad, src, txt])
+        
+        ani = ArtistAnimation(fig, movie, interval=1, blit=True)
+        plt.show()
+    else:
+        # Run silently
+        for it in range(config.nt):
+            solver.step(it * config.dt)
+            recorder_plane[it, :] = solver.Ez[config.x1, :]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_aspect('equal')
-    ax.set_facecolor('black') # Helps see the wave if it's faint
-    v_min, v_max = -0.0001, 0.0001
-    movie = []
+    return config, timeseries, recorder_plane
 
-    wall_mask = np.zeros((nx, ny))
-    wall_x = int(n_w - L/2)
-    # Top part of the wall
-    wall_mask[wall_x, :int(ny//2 - 2*d)] = 1
-    # Bottom part of the wall
-    wall_mask[wall_x, int(ny//2 + 2*d):] = 1
-
-    for it in range(nt):
-        t = it * dt
-        timeseries[it, 0] = t
-        print('%d/%d' % (it, nt))
-        Updater(Ez, Hx, Hy, Ez_dot, Ez_ddot, Jc, Hx_dot, Hy_dot, t)
-        recorder_plane[it, :] = Ez[x1,:]  # Store field at recorder
-
-        field_data = (Z_local * Ez).T
-        quad = ax.pcolormesh(X, Y, field_data, 
-                            vmin=v_min, vmax=v_max, 
-                            shading='auto', cmap='RdBu_r', animated=True)
-
-        # Plot Source and Recorder
-        src, = ax.plot(nodes_x[x0], nodes_y[y0], 'wo', ms=5, fillstyle='none')
-        txt = ax.text(0.5, 1.02, f'Step {it}/{nt}', transform=ax.transAxes, color='white', ha='center')
-        movie.append([quad, src, txt])
-
-    ax.set_xlim(nodes_x.min(), nodes_x.max())
-    ax.set_ylim(nodes_y.min(), nodes_y.max())
-    ani = ArtistAnimation(fig, movie, interval=1, blit=True)
+# --- Execution ---
+if __name__ == "__main__":
+    cfg, times, recorder = run_simulation()
+    
+    # 1D plot at center of plane
+    plt.figure()
+    plt.plot(times, recorder[:, cfg.ny // 2])
+    plt.title("Field at Recorder Plane (Center)")
     plt.show()
 
-plt.plot(timeseries, recorder_plane[:,L//2])        
-plt.show()
- 
-def freqs(recorder, dt, c):
-    # number of samples
-    n = len(recorder)
-    n_zero_pad = 10*n
-    fs = 1.0 / dt
-    df = fs / (n+n_zero_pad)
-    freq = np.arange(n+n_zero_pad) * df
-    freq[0] = 1e-5
-
-    # wavenumber
-    k = 2 * np.pi * freq / c
-
-    # FFTs
-    fft  = np.fft.fft(recorder.flatten(), n+n_zero_pad)
-    return freq, k, fft
-
-
-def FreqPlot(dt,c,recorders):
-        freq, k, fft1 = freqs(recorders, dt, c)
-        plt.plot(2*np.pi/c*freq, np.abs(fft1))
-        plt.title(f'Recorder 1')
-        plt.ylabel('|E(k)|')
-        plt.grid(True)
-        plt.axvline(f_c, linestyle=':', linewidth=1)
-        plt.xlim(0, 2*np.pi/c*2*f_c)
-        plt.xlabel(r'$kd$ []')
-        plt.tight_layout()
-        plt.show()
-
-        return freq
-
-freq1, k, fft1 = freqs(recorder_plane[:, L//2], dt, c)
-FreqPlot(dt,c,recorder_plane[:, L//2])
-
-
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.set_xlim(nodes_y.min(), nodes_y.max())
-max_int = np.max(recorder_plane**2)
-start_step = 400  # Adjust this based on when the wave hits the plane
-speed_delay = 100 # Higher = Slower (ms per frame). Try 100-200 for "slow motion"
-ax.set_ylim(0, max_int * 1.1)
-
-max_int = np.max(recorder_plane[start_step:, :]**2)
-ax.set_ylim(0, max_int * 1.2)
-
-line, = ax.plot([], [], color='red', lw=2)
-ax.set_xlabel('Y Position (m)')
-ax.set_ylabel('Intensity (E^2)')
-ax.grid(True, alpha=0.3)
-
-# Highlight the Core region for context
-ax.axvspan(nodes_y[y_start], nodes_y[y_start + d], 
-           color='yellow', alpha=0.1, label='Cladding')
-ax.axvspan(nodes_y[y_start + d], nodes_y[y_start + 3*d], 
-           color='blue', alpha=0.1, label='Core')
-ax.axvspan(nodes_y[y_start + 3*d], nodes_y[y_start + 4*d], 
-           color='yellow', alpha=0.1, label='Cladding')
-ax.legend(loc='upper right')
-
-title = ax.set_title('')
-
-def animate(i):
-    intensity = recorder_plane[i, :]**2
-    line.set_data(nodes_y, intensity)
+    # Intensity Animation
+    fig, ax = plt.subplots(figsize=(8, 4))
+    nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+    max_int = np.max(recorder**2)
+    line, = ax.plot([], [], color='red', lw=2)
     
-    current_time_ns = i * dt * 1e9
-    title.set_text(f'Intensity Profile | t = {current_time_ns:.2f} ns (Step {i})')
-    return line, title
+    ax.axvspan(nodes_y[cfg.y_start], nodes_y[cfg.y_start + cfg.d], color='yellow', alpha=0.1, label='Cladding')
+    ax.axvspan(nodes_y[cfg.y_start + cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue', alpha=0.1, label='Core')
+    ax.legend()
+    
+    def animate_intensity(i):
+        line.set_data(nodes_y, recorder[i, :]**2)
+        ax.set_title(f'Intensity Profile | t = {i * cfg.dt * 1e9:.2f} ns')
+        return line,
 
-anim_1d = FuncAnimation(fig, animate, 
-                        frames=range(start_step, nt, 2), 
-                        interval=speed_delay, 
-                        blit=True)
-
-plt.show()
+    ani_int = FuncAnimation(fig, animate_intensity, frames=range(400, cfg.nt, 2), interval=50)
+    plt.show()
