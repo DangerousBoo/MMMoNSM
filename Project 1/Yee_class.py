@@ -52,10 +52,10 @@ class SimulationConfig:
         self.t0     = 4 * self.sig_t
 
         # Grid Spacing (Non-uniform x)
-        self.dx_0 = self.lam_c / 25
-        self.dy_0 = self.lam_c / 25
+        self.dx_0 = self.lam_c / 30
+        self.dy_0 = self.lam_c / 30
         self.dx_f = self.dx_0 / 1
-        self.dy_f = self.dy_0 / 1 # / self.eps_core
+        self.dy_f = self.dy_0 / 1  / self.eps_core
         self.dx = np.full(self.nx - 1, self.dx_0)
         self.dy = np.full(self.ny - 1, self.dy_0)
         
@@ -123,7 +123,7 @@ class YeeSolver:
 
     def init_pml(self):
         p, m = 20, 4
-        eta_max = (m + 1) / (150 * np.pi * self.cfg.dx_f)
+        eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_f, self.cfg.dy_f]))
         ksi_k_max = 3
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
@@ -366,5 +366,5 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
-    results = SimulationRunner.run_full_analysis(speed = 200 , nt=200, d=30)
+    results = SimulationRunner.run_full_analysis(speed = 200 , nt=2000, d=20)
 
