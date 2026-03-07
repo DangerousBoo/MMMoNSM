@@ -21,7 +21,6 @@ class SimulationConfig:
         self.x1 = self.nx - 50 # Recorder location
         self.y_gap_top = self.ny // 2 - self.d // 2 # Gridpoint of the top gap edge
         self.y_gap_bot = self.ny // 2 + self.d // 2 # Gridpoint of the bottom gap edge
-        self.lam_c  = 1.0
 
         # Give possibility to change parameters via kwargs
         for key, value in kwargs.items():
@@ -35,7 +34,7 @@ class SimulationConfig:
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
 
         # Material Properties
-        self.eps_clad   = 2.1
+        self.eps_clad   = 2.218
         self.eps_core   = 2.22
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
@@ -45,6 +44,7 @@ class SimulationConfig:
         self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
 
         # Source Parameters
+        self.lam_c  = 1.0
         self.f_c    = self.c / self.lam_c
         self.A      = 1.0
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
@@ -207,7 +207,7 @@ class YeeSolver:
 
         # Source
         src = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
-        self.Ez[cfg.x0, cfg.y0] -= src / self.coef_p[cfg.x0-1, cfg.y0-1]
+        self.Ez[cfg.x0, cfg.y0] -= cfg.dx[cfg.x0] * cfg.dy[cfg.y0] * src / self.coef_p[cfg.x0-1, cfg.y0-1]
 
 ################################################################################################################################################
 #                                                          Simulation Runner:
@@ -264,7 +264,7 @@ class SimulationRunner:
         
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
-                             shading='nearest', cmap='RdBu_r', vmin=-1e-7, vmax=1e-7)
+                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
         time_text = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
 
         def update(i):
@@ -356,8 +356,8 @@ class SimulationRunner:
         ms_interval = int(1000 / speed)
         cls.plot_2d_animation(data, interval=ms_interval)
         cls.plot_1d_intensity(data, interval=ms_interval)
-        # cls.plot_grid_spacing(data)
-        # cls.plot_mesh(data)
+        cls.plot_grid_spacing(data)
+        cls.plot_mesh(data)
         return data
 
 
@@ -366,5 +366,5 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
-    results = SimulationRunner.run_full_analysis(speed = 200 , nt=200, d=30)
+    results = SimulationRunner.run_full_analysis(speed = 200 , nt=2000, d=20)
 
