@@ -360,11 +360,6 @@ class SimulationRunner:
         # cls.plot_mesh(data)
         return data
 
-
-
-
-
-
 if __name__ == "__main__":
     results = SimulationRunner.run_full_analysis(speed = 200 , nt=200, d=30)
 

@@ -231,7 +231,7 @@ class SimulationRunner:
         recorder_plane = np.zeros((config.nt, config.ny), dtype=np.float32)
         
         # 4. Run Simulation Loop
-        for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
+        for it in tqdm(range(config.nt), desc=f"Simulating Robin die vliegt (nt={config.nt})"):
             t = it * config.dt
             solver.step(t)
             
@@ -366,5 +366,7 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
+    print("Robin is een duif")
     results = SimulationRunner.run_full_analysis(speed = 200 , nt=2000, d=20)
+    print("Robin is geland")
 
