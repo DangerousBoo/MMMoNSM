@@ -68,6 +68,7 @@ M_ez = sp.kron(Ax, Ay).multiply(eps0)
 M = sp.block_diag((M_hx, M_hy, M_ez), format='csr')
 
 
+
 # "K"url matrices fzo
 K_hx_ez =  sp.kron(Inx, Dy)
 K_hy_ez = -sp.kron(Dx, Iny) 
@@ -79,6 +80,7 @@ K = sp.block_array([
     [None   , None,    K_hy_ez],
     [K_ez_hx, K_ez_hy, None   ]
     ], format='csr')
+
 
 LHS = M/dt + K/2
 RHS = M/dt - K/2
@@ -124,3 +126,27 @@ my_anim = ArtistAnimation(fig, movie, interval=50, repeat_delay=1000, blit=True)
 plt.show()
 plt.plot(E_rec)
 plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
