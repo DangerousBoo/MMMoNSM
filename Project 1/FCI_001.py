@@ -31,6 +31,16 @@ src = lambda t:5 * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
 
 
 
+
+
+
+
+
+
+
+
+
+
 # Init fields
 Ez = np.zeros((Nx,Ny))
 Hx = np.zeros((Nx,Ny))
@@ -71,10 +81,23 @@ PrevFields = sp.block_array([[sp.csr_array(Ez.reshape(-1,1))],
                              [sp.csr_array(Hx.reshape(-1,1))],
                              [sp.csr_array(Hy.reshape(-1,1))]])
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 E_rec = np.zeros((nt))
-
-
-
 fig, ax = plt.subplots()
 plt.axis('equal')
 plt.xlim([1, Nx+1])
