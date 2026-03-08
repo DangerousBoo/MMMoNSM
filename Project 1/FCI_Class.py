@@ -7,25 +7,25 @@ from matplotlib.animation import ArtistAnimation
 
 class FCI_TM_Solver:
     def __init__(self, Nx, Ny, Nt, lambda0, CFL):
+        # Constants & Parameters
         self.eps, self.mu, self.sigma, c = 8.854e-12, 1.256e-6, 0.001, 3e8
         self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
         self.lambda0, self.CFL = lambda0, CFL
         self.dx, self.dy = lambda0 / 30, lambda0 / 30
         self.dt = CFL / (c*np.sqrt(1/self.dx**2 + 1/self.dy**2))
         
-        # 1. Component lengths
+        # Component lengths
         self.len_hx = (Nx + 1) * Ny
         self.len_hy = Nx * (Ny + 1)
         self.len_ez = (Nx + 1) * (Ny + 1)
         self.total_len = self.len_hx + self.len_hy + self.len_ez
-        
-        # 2. Slice for Ez extraction
         self.idx_ez = slice(self.len_hx + self.len_hy, self.total_len)
         
-        # 3. Initialize operators and matrices
+        # Initialize operators and matrices
         self._build_system()
         
     def _get_operators(self, n, d):
+        # See syllabus for this e
         Ix      = sp.eye(n + 1, format='csr')
         A_hx    = (sp.eye(n, n + 1, k=0) + sp.eye(n, n + 1, k=1)).tocsr()
         Ax      = (sp.eye(n, n) + sp.eye(n, n, k=1)).tocsr()
@@ -60,8 +60,7 @@ class FCI_TM_Solver:
         R31, R32, R33 = -sp.kron(Atx, Dty), sp.kron(Dtx, Aty), sp.kron(Atx, Aty) @ Ezz_m
 
         self.RHS = sp.bmat([[R11, None, R13], [None, R22, R23], [R31, R32, R33]], format='csr')
-        
-        print("Factorizing LHS...")
+
         self.solve_func = spla.factorized(LHS)
 
     def run_simulation(self, Nt, src_func, src_pos):
@@ -69,7 +68,7 @@ class FCI_TM_Solver:
         ez_history = []
         movie_frames = []
         
-        # Calculate global index for source in Ez portion
+        # Index for the source, taking into account that the Hx and Hy vectors are placed first in the flat vector
         src_global_idx = (self.len_hx + self.len_hy) + (src_pos[0] * (self.Ny + 1) + src_pos[1])
         
         fig, ax = plt.subplots()
