@@ -15,21 +15,19 @@ Nx = 100
 Ny = 100
 lambda_0 = 1
 
+dx = lambda_0 / 30
+dy = lambda_0 / 30
 # Constants
 eps0 = 8.854e-12
 mu0 = 4*np.pi*1e-7
 c = 1/np.sqrt(eps0*mu0)
-dx = lambda_0 / 20
-dy = lambda_0 / 20
-dt = 1/(c*np.sqrt(1/dx**2 + 1/dy**2))
+
+dt = 2/(c*np.sqrt(1/dx**2 + 1/dy**2))
 f_c = c/lambda_0
 sig_t = a / (2 * np.pi * f_c)
 t0 = 4 * sig_t
 src = lambda t:5 * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
-c_idx = 2*Nx*Ny + (Nx//2)*Ny + (Ny//2)
-neighbors = [c_idx, c_idx+1, c_idx-1, c_idx+Ny, c_idx-Ny]
-weights = [0.5, 0.125, 0.125, 0.125, 0.125]
-eps_val, mu_val, sigma_val = 8.854e-12, 1.256e-6, 0.001
+eps_val, mu_val, sigma_val = 
 
 
 
@@ -62,49 +60,50 @@ Ix, Ihx, Ahx, Ax, Atx, Dx, Dtx = get_operators(Nx, dx)
 Iy, Ihy, Ahy, Ay, Aty, Dy, Dty = get_operators(Ny, dy)
 
 
-len_ex = (Nx + 1) * Ny
-len_ey = Nx * (Ny + 1)
-len_hz = (Nx + 1) * (Ny + 1)
 
-Exx_p = (eps_val/dt + sigma_val/2) * sp.eye((Nx+1)*Ny)
-Exx_m = (eps_val/dt - sigma_val/2) * sp.eye((Nx+1)*Ny)
-Eyy_p = (eps_val/dt + sigma_val/2) * sp.eye(Nx*(Ny+1))
-Eyy_m = (eps_val/dt - sigma_val/2) * sp.eye(Nx*(Ny+1))
-Mzz   = (mu_val/dt) * sp.eye((Nx+1)*(Ny+1))
+len_hx = (Nx + 1) * Ny
+len_hy = Nx * (Ny + 1)
+len_ez = (Nx + 1) * (Ny + 1)
 
-L11 = sp.kron(Ix, Ay) @ Exx_p
-L12 = sp.kron(Ihx, Ahy) * (sigma_val/2)  
-L13 = -sp.kron(Ix, Dy)
+# --- 2. Material Matrices (Sigma now applied to Ez blocks) ---
+Mxx = (mu_val/dt) * sp.eye(len_hx)
+Myy = (mu_val/dt) * sp.eye(len_hy)
+Ezz_p = (eps_val/dt + sigma_val/2) * sp.eye(len_ez)
+Ezz_m = (eps_val/dt - sigma_val/2) * sp.eye(len_ez)
 
-L21 = sp.kron(Ahx, Ihy) * (sigma_val/2) 
-L22 = sp.kron(Ax, Iy) @ Eyy_p
-L23 = sp.kron(Dx, Iy)
+L11 = sp.kron(Ix, Ay) @ Mxx
+L12 = None
+L13 = sp.kron(Ix, Dy)           
 
-L31 = -sp.kron(Atx, Dty)
-L32 = sp.kron(Dtx, Aty)
-L33 = sp.kron(Atx, Aty) @ Mzz
+L21 = None
+L22 = sp.kron(Ax, Iy) @ Myy
+L23 = -sp.kron(Dx, Iy)          
 
-R11 = sp.kron(Ix, Ay) @ Exx_m
-R12 = sp.kron(Ihx, Ahy) * (-sigma_val/2)
-R13 = sp.kron(Ix, Dy)
-
-R21 = sp.kron(Ahx, Ihy) * (-sigma_val/2)
-R22 = sp.kron(Ax, Iy) @ Eyy_m
-R23 = -sp.kron(Dx, Iy)
-
-R31 = sp.kron(Atx, Dty)
-R32 = -sp.kron(Dtx, Aty)
-R33 = sp.kron(Atx, Aty) @ Mzz
+L31 = sp.kron(Atx, Dty)      
+L32 = -sp.kron(Dtx, Aty)        
+L33 = sp.kron(Atx, Aty) @ Ezz_p
 
 LHS = sp.bmat([[L11, L12, L13],
                [L21, L22, L23],
                [L31, L32, L33]], format='csr')
 
+R11 = sp.kron(Ix, Ay) @ Mxx
+R12 = None
+R13 = -sp.kron(Ix, Dy)
+
+R21 = None
+R22 = sp.kron(Ax, Iy) @ Myy
+R23 = sp.kron(Dx, Iy)
+
+R31 = -sp.kron(Atx, Dty)
+R32 = sp.kron(Dtx, Aty)
+R33 = sp.kron(Atx, Aty) @ Ezz_m
+
 RHS = sp.bmat([[R11, R12, R13],
                [R21, R22, R23],
                [R31, R32, R33]], format='csr')
 
-u = np.zeros(len_ex + len_ey + len_hz)
+u = np.zeros(len_hx + len_hy + len_ez)
 
 
 
@@ -116,43 +115,35 @@ u = np.zeros(len_ex + len_ey + len_hz)
 
 
 
-# Indices to slice the solution vector u
-idx_ex = slice(0, len_ex)
-idx_ey = slice(len_ex, len_ex + len_ey)
-idx_hz = slice(len_ex + len_ey, len_ex + len_ey + len_hz)
-
-# --- 2. Solver and Plotter Setup ---
-hz_rec = np.zeros(Nt)
+# --- 5. Solver and Plotter Setup ---
+idx_ez = slice(len_hx + len_hy, len_hx + len_hy + len_ez)
+ez_rec = np.zeros(Nt)
 fig, ax = plt.subplots()
 movie = []
-# Define source location in the Hz grid (center)
+
+# Define source location in the Ez grid (center)
 src_x, src_y = (Nx + 1) // 2, (Ny + 1) // 2
-# Index in the Hz portion of the vector
-hz_source_local_idx = src_x * (Ny + 1) + src_y
-hz_source_global_idx = len_ex + len_ey + hz_source_local_idx
+ez_source_global_idx = len_hx + len_hy + (src_x * (Ny + 1) + src_y)
+
+# Optimization: Pre-factorize for a 100x improvement in loop speed
+solve_func = spla.factorized(LHS)
 
 for i in range(Nt):
     t = i * dt
-    
-    # 1. Update Source 
-    current_src = src(t)
-    
-    # 2. Build the B vector (RHS * u + source)
     b = RHS.dot(u)
-    b[hz_source_global_idx] += current_src
+    b[ez_source_global_idx] += src(t)
     
-    # 3. Solve Implicit System
-    u = spla.spsolve(LHS, b)
+    # Solve system using pre-factorized matrix
+    u = solve_func(b)
 
-    # 4. Extract and Reshape Hz for visualization
-    hz_2d = u[idx_hz].reshape((Nx + 1, Ny + 1))
-    hz_rec[i] = hz_2d[src_x, src_y]
+    # Extract Ez for visualization
+    ez_2d = u[idx_ez].reshape((Nx + 1, Ny + 1))
+    ez_rec[i] = ez_2d[src_x, src_y]
 
-    # 5. Animation frames
     if i % 2 == 0:
         txt = ax.text(0.5, 1.05, f'Step: {i}/{Nt}', ha="center", transform=ax.transAxes)
-        vlimit = 0.000005 
-        img = ax.imshow(hz_2d.T, animated=True, cmap='RdBu', origin='lower',
+        vlimit = 0.1
+        img = ax.imshow(ez_2d.T, animated=True, cmap='RdBu', origin='lower',
                         extent=[0, Nx*dx, 0, Ny*dy],
                         vmin=-vlimit, vmax=vlimit)
         movie.append([txt, img])
@@ -161,12 +152,12 @@ for i in range(Nt):
         print(f"Iterating: {i}/{Nt}")
 
 ani = ArtistAnimation(fig, movie, interval=50, blit=True)
-plt.colorbar(img, ax=ax, label='Hz Field Amplitude')
+plt.colorbar(img, ax=ax, label='Ez Field Amplitude')
 plt.show()
 
 plt.figure()
-plt.plot(np.arange(Nt)*dt, hz_rec)
-plt.title("Hz Field at Source Location")
+plt.plot(np.arange(Nt)*dt, ez_rec)
+plt.title("Ez Field at Source Location")
 plt.xlabel("Time (s)")
 plt.ylabel("Amplitude")
 plt.grid(True)
