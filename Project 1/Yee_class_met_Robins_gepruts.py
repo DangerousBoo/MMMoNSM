@@ -12,19 +12,11 @@ from matplotlib.animation import FuncAnimation
 class SimulationConfig:
     """Handles all physical and numerical parameters."""
     def __init__(self, **kwargs):
-        # Grid Dimensions
-        self.nx, self.ny = 600, 200 # Number of grid points in x,y direction
-        self.nt = 1000 # Number of time steps
-        self.L = 200 # Length of the waveguide in grid points
-        self.d = 20 # Half the width of the waveguide core in grid points
-        self.x0, self.y0 = 50, self.ny // 2 # Source location
-        self.x1 = self.nx - 50 # Recorder location
-        self.y_gap_top = self.ny // 2 - self.d // 2 # Gridpoint of the top gap edge
-        self.y_gap_bot = self.ny // 2 + self.d // 2 # Gridpoint of the bottom gap edge
-
         # Give possibility to change parameters via kwargs
         for key, value in kwargs.items():
             setattr(self, key, value)
+        
+        self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
         
         # Physical Constants
         self.c          = 299792458
@@ -50,7 +42,32 @@ class SimulationConfig:
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
+        
+        # Dimensions expressed in amount of wavelengths
+        self.L_wg   = 20 * self.lam_c # Length of the waveguide in meters
+        self.w_core = 5 * self.lam_c # Width of the core in meters
+        self.w_clad = 5 * self.lam_c # Width of the cladding on each side in meters
+        self.w_air  = 5 * self.lam_c # Width of the air region on each side next to the cladding in meters
+        self.d      = 20 * self.lam_c # Distance between source and the barrier in meters
+        self.t_m    = 1 * self.lam_c # Thickness of the barrier infront of the waveguide
+        self.Ll     = 2 * self.lam_c # Length of the left region before the source in meters
+        self.Lr     = 2 * self.lam_c # Length of the right region after the waveguide in meters
+        self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
+        self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
 
+        # Grid Size
+        self.dx_0   = self.lam_c / 30
+        self.n_Ll   = int(np.ceil(self.Ll / self.dx_0))
+        self.n_d    = int(np.ceil(self.d / self.dx_0))
+        self.n_t_m  = int(np.ceil(self.t_m / self.dx_0))
+        self.n_wg   = int(np.ceil(self.L_wg * np.sqrt(self.eps_core) / self.dx_0))
+        self.n_Lr   = int(np.ceil(self.Lr / self.dx_0))
+        self.nx     = self.n_Ll + self.n_d + self.n_t_m + self.n_wg + self.n_Lr
+        if self.wg_type == "step":
+            self.n_core = int(np.ceil(self.w_core * np.sqrt(self.eps_core) / self.dx_0))
+            self.n_clad = int(np.ceil(self.w_clad * np.sqrt(self.eps_clad) / self.dx_0))
+            self.n_air  = int(np.ceil(self.w_air * np.sqrt(1.0) / self.dx_0))
+        
         # Grid Spacing (Non-uniform x)
         self.dx_0 = self.lam_c / 30
         self.dy_0 = self.lam_c / 30
@@ -367,6 +384,6 @@ class SimulationRunner:
 
 if __name__ == "__main__":
     print("Robin is een duif")
-    results = SimulationRunner.run_full_analysis(speed = 200 , nt=2000, d=20)
+    results = SimulationRunner.run_full_analysis(speed = 200 , nt=2000, d=20, wg_type = "step")
     print("Robin is geland")
 
