@@ -11,12 +11,8 @@ from matplotlib.animation import FuncAnimation
 ################################################################################################################################################
 class SimulationConfig:
     """Handles all physical and numerical parameters."""
-    def __init__(self, **kwargs):
-        # Give possibility to change parameters via kwargs
-        for key, value in kwargs.items():
-            setattr(self, key, value)
         
-        self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
+    def __init__(self, **kwargs):
         
         # Physical Constants
         self.c          = 299792458
@@ -24,11 +20,10 @@ class SimulationConfig:
         self.mu0        = 4 * np.pi * 1e-7
         self.gamma      = 0.0
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
-
+        
         # Material Properties
         self.eps_clad   = 2.218
         self.eps_core   = 2.22
-        
 
         # Source Parameters
         self.lam_c  = 1.0
@@ -43,16 +38,26 @@ class SimulationConfig:
         self.w_core = 3 * self.lam_c # Width of the core in meters
         self.w_clad = 3 * self.lam_c # Width of the cladding on each side in meters
         self.w_air  = 1 * self.lam_c # Width of the air region on each side next to the cladding in meters
-        self.d      = 10 * self.lam_c # Distance between source and the barrier in meters
+        self.d      = 4 * self.lam_c # Distance between source and the barrier in meters
         self.t_m    = 0.01 * self.lam_c # Thickness of the barrier infront of the waveguide
-        self.Ll     = 1 * self.lam_c # Length of the left region before the source in meters
+        self.Ll     = 3 * self.lam_c # Length of the left region before the source in meters
         self.Lr     = 1 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
-
+        
+        # Grid refinement
+        self.finesse = 30 #dictates how many cells per central wavelength
+        
+        # Give possibility to change parameters via kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        
+        self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
 
         # Grid Size
-        self.dx_0   = self.lam_c / 30
+        
+        # X axis
+        self.dx_0   = self.lam_c / self.finesse
         self.alpha  = np.sqrt(2)
         
         self.n_Ll   = int(np.ceil(self.Ll / self.dx_0))
@@ -74,7 +79,44 @@ class SimulationConfig:
         self.dx     = np.concatenate((self.dx, np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))))
         
         self.nx = len(self.dx)+1
-        self.ny = int(np.ceil(self.W / self.dx_0)) + 1
+        
+        # Y axis
+        self.dy_0   = self.lam_c / 30
+        
+        self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
+        self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
+        self.dy = np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))
+        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad)))
+        
+        if self.wg_type == "step":
+            self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
+            self.dy = np.concatenate((self.dy, np.full(self.n_clad, self.w_clad / self.n_clad)))
+            
+            self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
+            self.dy = np.concatenate((self.dy, np.full(self.n_core, self.w_core / self.n_core)))
+            
+            self.dy = np.concatenate((self.dy, np.full(self.n_clad, self.w_clad / self.n_clad)))
+        else:
+            self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
+            self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
+            self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
+            self.dy_core = np.array([np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core)]).min()
+            
+            self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
+            self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
+            self.dy = np.concatenate((self.dy, np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))
+            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_cc,0, -1) * self.dy_core))
+            
+            self.n_core = int(np.ceil(self.w_core / self.dy_core))
+            self.dy = np.concatenate((self.dy, np.full(self.n_core, self.w_core / self.n_core)))
+            
+            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1,self.n_f_cc + 1) * self.dy_core))
+            self.dy = np.concatenate((self.dy, np.full(int(self.n_clad - self.n_f_cc), (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))       
+            
+        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1,self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad)))
+        self.dy = np.concatenate((self.dy, np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))))
+        
+        self.ny = len(self.dy) + 1
         
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
@@ -85,7 +127,6 @@ class SimulationConfig:
         
         # Grid Spacing (Non-uniform x)
         self.dx_f = self.dx.min()
-        self.dy = np.full(self.ny - 1, self.dx_0)
         self.dy_f = self.dy.min()
         
         # # Grid Refinement Logic
@@ -120,19 +161,21 @@ class SimulationConfig:
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
         
-        n_f = np.ceil(np.log(d_coarse / d_fine) / np.log(alpha))
+        n_f = int(np.ceil(np.log(d_coarse / d_fine) / np.log(alpha))) - 1
         L_f = d_fine * (alpha**(n_f-1) - alpha) / (alpha - 1)
         
         return L_f, n_f
     
     def setup_waveguide(self):
-        self.L = 200
-        self.x_start = int((self.Ll + self.d + self.t_m)/self.dx_0) # Start of the waveguide in x direction
-        self.y_start = int(self.w_air/self.dx_0) # Start of the waveguide in y direction
-        # self.epsilon_r[self.x_start:, self.y_start            : self.y_start + 2*self.w_clad + self.w_core] = self.eps_clad
-        # self.epsilon_r[self.x_start:, self.y_start + self.w_clad : self.y_start + 2*self.w_clad + self.w_core] = self.eps_core
-    
-    
+        self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air):int(-self.n_air)] = self.eps_clad
+        if self.wg_type == "step":
+            self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air + self.n_clad):int(- (self.n_air + self.n_clad))] = self.eps_core
+        else:
+            eps_val = lambda y: self.eps_core + self.a_eps * (y-self.W/2)**2 + self.b_eps * (y-self.W/2)**4 
+            self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air + self.n_clad):int(- (self.n_air + self.n_clad))] = eps_val(self.dy_core * np.arange(self.n_air + self.n_clad, (self.n_air + self.n_clad + self.n_core) + 1))
+            
+        self.sigma[int(self.n_Ll + self.n_d - 1),:int(self.n_air + self.n_clad)] = 3.5e7 #conductivity of aluminum
+        self.sigma[int(self.n_Ll + self.n_d - 1), - int(self.n_air + self.n_clad):] = 3.5e7
 ################################################################################################################################################
 #                                                          Yee Solver Class:
 ################################################################################################################################################
@@ -330,9 +373,9 @@ class SimulationRunner:
         ax.set_ylim(0, max_int * 1.2)
         
         # Waveguide:
-        ax.axvspan(nodes_y[cfg.y_start          ], nodes_y[cfg.y_start +   cfg.d], color='yellow', alpha=0.1)
-        ax.axvspan(nodes_y[cfg.y_start +   cfg.d], nodes_y[cfg.y_start + 3*cfg.d], color='blue'  , alpha=0.1)
-        ax.axvspan(nodes_y[cfg.y_start + 3*cfg.d], nodes_y[cfg.y_start + 4*cfg.d], color='yellow', alpha=0.1)
+        ax.axvspan(nodes_y[int(cfg.n_air)             ], nodes_y[int(cfg.n_air + cfg.n_clad)], color='yellow', alpha=0.1)
+        ax.axvspan(nodes_y[int(cfg.n_air + cfg.n_clad)], nodes_y[int(cfg.n_air + cfg.n_clad + cfg.n_core)], color='blue'  , alpha=0.1)
+        ax.axvspan(nodes_y[int(cfg.n_air + cfg.n_clad + cfg.n_core)], nodes_y[int(cfg.n_air + 2 * cfg.n_clad + cfg.n_core)], color='yellow', alpha=0.1)
         time_text = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontweight='bold')
 
         def update(i):
@@ -364,9 +407,10 @@ class SimulationRunner:
         ax2.grid(True, alpha=0.3)
         
         # Highlight waveguide region in dy plot
-        ys = int(cfg.ny // 2 - 2 * cfg.d)
-        ye = ys + 4 * cfg.d
-        ax2.axvspan(ys, ye, color='blue', alpha=0.1, label='Waveguide Area')
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        ax2.axvspan(int(cfg.n_air), int(cfg.n_air + cfg.n_clad), color='yellow', alpha=0.1)
+        ax2.axvspan(int(cfg.n_air + cfg.n_clad),int(cfg.n_air + cfg.n_clad + cfg.n_core), color='blue'  , alpha=0.1)
+        ax2.axvspan(int(cfg.n_air + cfg.n_clad + cfg.n_core), int(cfg.n_air + 2 * cfg.n_clad + cfg.n_core), color='yellow', alpha=0.1)
         ax2.legend()
 
         plt.tight_layout()
@@ -378,7 +422,6 @@ class SimulationRunner:
         cfg = results["config"]
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
-        print(cfg.dx)
         
     
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -395,9 +438,9 @@ class SimulationRunner:
     def run_full_analysis(cls, speed=40, **kwargs):
         data = cls.execute(**kwargs)
         ms_interval = int(1000 / speed)
-        # cls.plot_2d_animation(data, interval=ms_interval)
-        # cls.plot_1d_intensity(data, interval=ms_interval)
-        # cls.plot_grid_spacing(data)
+        cls.plot_2d_animation(data, interval=ms_interval)
+        cls.plot_1d_intensity(data, interval=ms_interval)
+        cls.plot_grid_spacing(data)
         cls.plot_mesh(data)
         return data
 
@@ -408,6 +451,6 @@ class SimulationRunner:
 
 if __name__ == "__main__":
     print("Robin is een duif")
-    results = SimulationRunner.run_full_analysis(speed = 200 , nt=20, wg_type = "step")
+    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=100, wg_type = "grin", finesse = 10)
     print("Robin is geland")
 
