@@ -22,8 +22,8 @@ class SimulationConfig:
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
         
         # Material Properties
-        self.eps_clad   = 2.218
-        self.eps_core   = 2.22
+        self.eps_clad   = 2.218**2
+        self.eps_core   = 2.22**2
 
         # Source Parameters
         self.lam_c  = 1.0
@@ -451,6 +451,6 @@ class SimulationRunner:
 
 if __name__ == "__main__":
     print("Robin is een duif")
-    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=100, wg_type = "grin", finesse = 10)
+    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=100, wg_type = "step", finesse = 10)
     print("Robin is geland")
 
