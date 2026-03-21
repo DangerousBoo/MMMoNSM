@@ -46,7 +46,7 @@ class FCI_TM_Solver:
 
         sx = np.zeros((self.nx_n, self.ny_n))
         sy = np.zeros((self.nx_n, self.ny_n))
-        p, m = 20, 4
+        p, m = 25, 4
         eta_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
         for i in range(p):
@@ -85,6 +85,7 @@ class FCI_TM_Solver:
         s_x, s_y = self._get_pml_profiles()
         Ix, Ahx, Ax, Atx, Dx, Dtx = self._get_operators(self.Nx, self.dx)
         Iy, Ahy, Ay, Aty, Dy, Dty = self._get_operators(self.Ny, self.dy)
+
 
         Ezz_p = (self.eps / self.dt + self.sigma / 2) * sp.eye(self.len_ez) + sp.diags((s_x + s_y) / 2)
         Ezz_m = (self.eps / self.dt - self.sigma / 2) * sp.eye(self.len_ez) - sp.diags((s_x + s_y) / 2)
