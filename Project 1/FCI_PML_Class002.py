@@ -61,7 +61,7 @@ class FCI_TM_Solver:
         self.sx = np.zeros((self.nx_n,self.ny_n))
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
-        p, m = 10, 4
+        p, m = 20, 4
         k_max = 4
         s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
@@ -91,14 +91,18 @@ class FCI_TM_Solver:
             Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
             Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
             Dtx[n, n-1] = -2
-            return Ix, Dx.tocsr(), Dtx.tocsr()
+
+            A1 = sp.diags([1, 1], [0, -1], shape=(n, n-1), format='csr')
+            A2 = sp.diags([1, 1], [0, 1], shape=(n, n+1), format='csr')
+
+            return Ix, Dx.tocsr(), Dtx.tocsr(), A1.tocsr(), A2.tocsr()
 
     def _build_system(self):
         v, c, Z, gamma, dt = self.v_local, self.c, self.Z_local, self.gamma, self.dt
         sx, sy, kx, ky = self._get_pml_profiles()
 
-        Ix, Dx, Dtx = self._get_operators(self.Nx, self.dx)
-        Iy, Dy, Dty = self._get_operators(self.Ny, self.dy)
+        Ix, Dx, Dtx, Ax1, Ax2 = self._get_operators(self.Nx, self.dx)
+        Iy, Dy, Dty, Ay1, Ay2 = self._get_operators(self.Ny, self.dy)
         
         DY_ez_to_hx = sp.kron(Ix, Dy)   # Size: len_hx x len_ez
         DX_ez_to_hy = sp.kron(Dx, Iy)   # Size: len_hy x len_ez
@@ -108,7 +112,10 @@ class FCI_TM_Solver:
         I_hx = sp.eye(self.len_hx, format='csr')
         I_hy = sp.eye(self.len_hy, format='csr')
         I_ez = sp.eye(self.len_ez, format='csr')
-        
+
+        Interp_Y = sp.kron(Ix, Ay2) * 0.5  # Maps Ez grid -> Hx grid
+        Interp_X = sp.kron(Ax2, Iy) * 0.5  # Maps Ez grid -> Hy grid
+
         N = self.nx_n * self.ny_n
         I = sp.eye(N, format='csr')
 
@@ -117,49 +124,59 @@ class FCI_TM_Solver:
         byp = (ky / (v * dt) + Z * sy / 2.0).flatten()
         bxm = (kx / (v * dt) - Z * sx / 2.0).flatten()
         bym = (ky / (v * dt) - Z * sy / 2.0).flatten()
+
+        bxp_hx = Interp_Y.dot(bxp)
+        byp_hx = Interp_Y.dot(byp)
+        bxm_hx = Interp_Y.dot(bxm)
+        bym_hx = Interp_Y.dot(bym)
+
+        bxp_hy = Interp_X.dot(bxp)
+        byp_hy = Interp_X.dot(byp)
+        bxm_hy = Interp_X.dot(bxm)
+        bym_hy = Interp_X.dot(bym)
+
         self.bz_h = 1.0 / (c * dt)
         self.bz_e = 1.0 / (v * dt)
         self.ap = 2.0 * gamma / dt + 1.0
         self.am = 2.0 * gamma / dt - 1.0
 
-        def to_diag(val, length):
-            if np.isscalar(val):
-                return sp.diags(np.full(length, val), format='csr')
-            else:
-                # MUST flatten() the array before slicing to ensure it is strictly 1D
-                val_flat = np.array(val).flatten()
-                return sp.diags(val_flat[:length], format='csr')
+        def to_diag_vec(vec):
+            return sp.diags(vec, format='csr')
             
-        L11 = to_diag(1.0/(c*dt), self.len_hx);             L12 = to_diag(-bxp, self.len_hx)
-        L22 = to_diag(byp, self.len_hx)
-        L33 = to_diag(bxp, self.len_hy);                    L34 = to_diag(-byp, self.len_hy)
-        L44 = to_diag(1.0/(c*dt), self.len_hy)
-        L55 = to_diag(byp, self.len_ez);                    L56 = to_diag(-1.0/(v*dt), self.len_ez)
-        L66 = to_diag(bxp, self.len_ez);                    L67 = -I_ez / (c * dt)
-        L77 = I_ez / (c * dt);                              L78 = I_ez / 2.0
-        L87 = to_diag(-self.sigma.flatten(), self.len_ez);  L88 = to_diag(2.0*gamma/dt + 1.0, self.len_ez)
+        def to_diag_scal(val, length):
+            val_flat = np.array(val).flatten()
+            return sp.diags(np.full(length, val_flat), format='csr')
+            
+        L11 = to_diag_scal(1.0/(c*dt), self.len_hx);    L12 = to_diag_vec(-bxp_hx)
+        L22 = to_diag_vec(byp_hx);                      L25 = DY_ez_to_hx
+        L33 = to_diag_vec(bxp_hy);                      L34 = to_diag_vec(-byp_hy)
+        L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -DX_ez_to_hy
+        L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
+        L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
+        L71 = DY_hx_to_ez; L73 = -DX_hy_to_ez; L77 = I_ez / (c * dt); L78 = I_ez / 2.0
+        L87 = to_diag_vec(-self.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
             [L11,  L12,  None, None, None, None, None, None], # hx
-            [None, L22,  None, None, None, None, None, None], # hx_dot
+            [None, L22,  None, None, L25,  None, None, None], # hx_dot
             [None, None, L33,  L34,  None, None, None, None], # hy
-            [None, None, None, L44,  None, None, None, None], # hy_dot
+            [None, None, None, L44,  L45,  None, None, None], # hy_dot
             [None, None, None, None, L55,  L56,  None, None], # ez
             [None, None, None, None, None, L66,  L67,  None], # ez_dot
-            [None, None, None, None, None, None, L77,  L78 ], # ez_ddot
+            [L71,  None, L73,  None, None, None, L77,  L78 ], # ez_ddot
             [None, None, None, None, None, None, L87,  L88 ]  # jz
         ], format='csc')
 
         # RHS uses beta_m and flips signs on derivative terms
-        R11 = to_diag(1.0/(c*dt), self.len_hx);             R12 = to_diag(-bxm, self.len_hx)
-        R22 = to_diag(bym, self.len_hx);                    R25 = -DY_ez_to_hx
-        R33 = to_diag(bxm, self.len_hy);                    R34 = to_diag(-bym, self.len_hy)
-        R44 = to_diag(1.0/(c*dt), self.len_hy);             R45 = DX_ez_to_hy
-        R55 = to_diag(bym, self.len_ez);                    R56 = to_diag(-1.0/(v*dt), self.len_ez)
-        R66 = to_diag(bxm, self.len_ez);                    R67 = -I_ez / (c * dt)
-        R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;          R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
-        R87 = to_diag(self.sigma.flatten(), self.len_ez);   R88 = to_diag(2.0*gamma/dt - 1.0, self.len_ez)
+        R11 = to_diag_scal(1.0/(c*dt), self.len_hx);    R12 = to_diag_vec(-bxm_hx)
+        R22 = to_diag_vec(bym_hx);                      R25 = -DY_ez_to_hx
+        R33 = to_diag_vec(bxm_hy);                      R34 = to_diag_vec(-bym_hy)
+        R44 = to_diag_scal(1.0/(c*dt), self.len_hy);    R45 = DX_ez_to_hy
+        R55 = to_diag_vec(bym);                         R56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
+        R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
+        R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
+        R87 = to_diag_vec(self.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
 
         # Assemble RHS Block Matrix
         self.RHS = sp.bmat([
@@ -184,6 +201,8 @@ class FCI_TM_Solver:
         # Global index for Ez component at src_pos
         offset = 2 * self.len_hx + 2 * self.len_hy
         x0, y0 = src_pos
+
+        # src_idx = offset + x0 * self.ny_n + y0
         
         shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
         neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
@@ -196,6 +215,7 @@ class FCI_TM_Solver:
 
             #Smooth source over a couple of grid points to prevent checkerboarding
             src_val = self.my_src(t)
+            # b[src_idx] += src_val
             for idx, w in zip(neighbors, weights):
                 b[idx] += src_val * w
 
@@ -205,7 +225,7 @@ class FCI_TM_Solver:
             
             if i % 2 == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T, cmap='RdBu', origin='lower', animated=True,
+                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
                                 extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1)
                 movie_frames.append([txt, img])
         
@@ -236,12 +256,12 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 100, 
-    'Ny': 100, 
+    'Nx': 200, 
+    'Ny': 200, 
     'Nt': 200, 
     'lambda0': 1.0, 
     'CFL': 2,
-    'Source_loc' : (50,50),
+    'Source_loc' : (50,100),
     'bc': 'PEC'
 }
 
