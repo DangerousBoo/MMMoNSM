@@ -15,7 +15,6 @@ class FCI_TM_Solver:
         self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
 
         # Source Parameters
-        self.f_c    = c / self.lambda0
         self.f_c    = self.c / self.lambda0
         self.A      = 1.0
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
