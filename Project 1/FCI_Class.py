@@ -8,19 +8,19 @@ from matplotlib.animation import ArtistAnimation
 class FCI_TM_Solver:
     def __init__(self, Nx, Ny, Nt, lambda0, CFL):
         # Constants & Parameters
-        self.eps, self.mu, self.sigma, c = 8.854e-12, 1.256e-6, 0.0, 3e8 # Set sigma=0 for no dampening
+        self.eps, self.mu, self.sigma, self.c = 8.854e-12, 1.256e-6, 0.0, 3e8 # Set sigma=0 for no dampening
         self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
         self.lambda0, self.CFL = lambda0, CFL
         self.dx, self.dy = lambda0 / 30, lambda0 / 30
-        self.dt = CFL / (c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
+        self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
 
         # Source Parameters
-        self.f_c    = self.c / self.lam_c
+        self.f_c    = self.c / self.lambda0
         self.A      = 1.0
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
-        
+
         # Component lengths
         self.len_hx = (Nx + 1) * Ny
         self.len_hy = Nx * (Ny + 1)
@@ -30,22 +30,20 @@ class FCI_TM_Solver:
         
         self._build_system()
 
-    def my_src(self):
-        t = np.linspace(0,self.Nt * self.dt)
-        f_c = 3e8 / 1.0
-        t0 = 4 * (3 / (2 * np.pi * f_c))
-        # Gaussian Pulse
-        return 5 * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/(3/(2*np.pi*f_c)))**2)
+    def my_src(self, t):
+        # Gaussian Pulse: A * cos(2*pi*fc*(t-t0)) * exp(-0.5 * ((t-t0)/sig_t)**2)
+        return self.A * np.cos(2 * np.pi * self.f_c * (t - self.t0)) * \
+               np.exp(-0.5 * ((t - self.t0) / self.sig_t)**2)
 
     def _get_pml_profiles(self):
         sx = np.zeros((self.Nx + 1, self.Ny + 1))
         sy = np.zeros((self.Nx + 1, self.Ny + 1))
-        p, m = 20, 4
-        eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_f, self.cfg.dy_f]))
+        p, m = 25, 4
+        eta_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
-        for i in range(self.pml_cells):
+        for i in range(p):
             d = (p - i) / p
-            val = eta_max * d ** self.m
+            val = eta_max * d ** m
             sx[i, :] = val # Left
             sx[-1-i, :] = val # Right
             sy[:, i] = val # Bottom
@@ -60,49 +58,61 @@ class FCI_TM_Solver:
         Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
         Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
         
-        # Boundary conditions
+        # Boundary conditions (PBC)
         Dtx[n, n-1] = -2
         Atx[n, n] = 2
         
         return Ix, Ahx, Ax, Atx.tocsr(), Dx.tocsr(), Dtx.tocsr() / d
 
     def _build_system(self):
+        s_x, s_y = self._get_pml_profiles()
         Ix, Ahx, Ax, Atx, Dx, Dtx = self._get_operators(self.Nx, self.dx)
         Iy, Ahy, Ay, Aty, Dy, Dty = self._get_operators(self.Ny, self.dy)
 
-        Mxx = (self.mu / self.dt) * sp.eye(self.len_hx)
+
+        Ezz_p = (self.eps / self.dt + self.sigma / 2) * sp.eye(self.len_ez) + sp.diags((s_x + s_y) / 2)
+        Ezz_m = (self.eps / self.dt - self.sigma / 2) * sp.eye(self.len_ez) - sp.diags((s_x + s_y) / 2)
+
+        mux_diag = (self.mu / self.dt) + s_x / 2
+        muy_diag = (self.mu / self.dt) + s_y / 2
+        Mxx = sp.diags(mux_diag.repeat(self.Ny) if len(mux_diag) < self.len_hx else mux_diag[:self.len_hx])
+        Mxx = (self.mu / self.dt) * sp.eye(self.len_hx) + sp.diags(np.zeros(self.len_hx)) # Placeholder for complex H-stretch
         Myy = (self.mu / self.dt) * sp.eye(self.len_hy)
-        Ezz_p = (self.eps / self.dt + self.sigma / 2) * sp.eye(self.len_ez)
-        Ezz_m = (self.eps / self.dt - self.sigma / 2) * sp.eye(self.len_ez)
 
         # LHS
         L11, L13 = sp.kron(Ix, Ay) @ Mxx, sp.kron(Ix, Dy)
         L22, L23 = sp.kron(Ax, Iy) @ Myy, -sp.kron(Dx, Iy)
         L31, L32, L33 = sp.kron(Atx, Dty), -sp.kron(Dtx, Aty), sp.kron(Atx, Aty) @ Ezz_p
-        LHS = sp.bmat([[L11, None, L13], [None, L22, L23], [L31, L32, L33]], format='csr')
+        LHS = sp.bmat([[L11, None, L13], 
+                       [None, L22, L23], 
+                       [L31, L32, L33]], 
+                       format='csr')
         
         # RHS
         R11, R13 = sp.kron(Ix, Ay) @ Mxx, -sp.kron(Ix, Dy)
         R22, R23 = sp.kron(Ax, Iy) @ Myy, sp.kron(Dx, Iy)
         R31, R32, R33 = -sp.kron(Atx, Dty), sp.kron(Dtx, Aty), sp.kron(Atx, Aty) @ Ezz_m
-        self.RHS = sp.bmat([[R11, None, R13], [None, R22, R23], [R31, R32, R33]], format='csr')
+        self.RHS = sp.bmat([[R11, None, R13],
+                            [None, R22, R23], 
+                            [R31, R32, R33]], 
+                            format='csr')
 
         self.solve_func = spla.factorized(LHS)
 
-    def run_simulation(self, src_func, src_pos):
+    def run_simulation(self, src_pos):
         u = np.zeros(self.total_len)
         ez_history = []
         movie_frames = []
         
+        # Global index for Ez component at src_pos
         src_global_idx = (self.len_hx + self.len_hy) + (src_pos[0] * (self.Ny + 1) + src_pos[1])
         
         fig, ax = plt.subplots()
         for i in tqdm(range(self.Nt), desc="Simulating"):
             t = i * self.dt
             b = self.RHS.dot(u)
-            b[src_global_idx] += src_func(t)
+            b[src_global_idx] += self.my_src(t)
             u = self.solve_func(b)
-            
             ez_2d = u[self.idx_ez].reshape((self.Nx + 1, self.Ny + 1))
             ez_history.append(ez_2d[src_pos[0], src_pos[1]])
             
@@ -126,25 +136,24 @@ class FCI_TM_Solver:
         plt.show()
 
     @classmethod
-    def run_full_analysis(cls, params, src_func, src_pos):
-        # 1. Initialize
+    def run_full_analysis(cls, params):
+        src_pos = params.pop('src_pos', (params['Nx']//2, params['Ny']//2))
         solver = cls(**params)
         
-        # 2. Run
-        ani, ez_data = solver.run_simulation(src_func, src_pos)
-        
-        # 3. Plot 1D
+        # Run simulation
+        ani, ez_data = solver.run_simulation(src_pos)
+        # Plot 1D intensity
         solver.plot_1d_intensity(solver.dt, ez_data)
-        
-        # 4. Show Animation
         plt.show()
         return ez_data
 
-# --- Execution ---
 
+sim_params = {
+    'Nx': 200, 
+    'Ny': 200, 
+    'Nt': 200, 
+    'lambda0': 1.0, 
+    'CFL': 2
+}
 
-
-sim_params = {'Nx': 100, 'Ny': 100, 'Nt': 200, 'lambda0': 1, 'CFL': 4}
-source_position = (30, 30)
-
-results = FCI_TM_Solver.run_full_analysis(sim_params, my_src, source_position)
+results = FCI_TM_Solver.run_full_analysis(sim_params)
