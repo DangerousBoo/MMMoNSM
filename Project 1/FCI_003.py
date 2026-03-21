@@ -27,7 +27,7 @@ f_c = c/lambda_0
 sig_t = a / (2 * np.pi * f_c)
 t0 = 4 * sig_t
 src = lambda t:5 * np.cos(2*np.pi*f_c*(t-t0)) * np.exp(-0.5*((t-t0)/sig_t)**2)
-eps_val, mu_val, sigma_val = 
+eps_val, mu_val, sigma_val = 8.854e-12, 0.0, 1.256e-6
 
 
 

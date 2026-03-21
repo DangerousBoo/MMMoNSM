@@ -15,6 +15,7 @@ class FCI_TM_Solver:
         self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
 
         # Source Parameters
+        self.f_c    = c / self.lambda0
         self.f_c    = self.c / self.lambda0
         self.A      = 1.0
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
@@ -122,7 +123,7 @@ class FCI_TM_Solver:
                                 extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1)
                 movie_frames.append([txt, img])
         
-        ani = ArtistAnimation(fig, movie_frames, interval=50, blit=True)
+        ani = ArtistAnimation(fig, movie_frames, interval=100, blit=True)
         return ani, np.array(ez_history)
 
     @staticmethod
