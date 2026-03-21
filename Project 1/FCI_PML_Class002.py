@@ -182,7 +182,7 @@ class FCI_TM_Solver:
         movie_frames = []
         
         # Global index for Ez component at src_pos
-        offset = self.len_hx + self.len_hy
+        offset = 2 * self.len_hx + 2 * self.len_hy
         x0, y0 = src_pos
         
         shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
