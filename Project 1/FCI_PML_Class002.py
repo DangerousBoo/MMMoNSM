@@ -40,8 +40,10 @@ class FCI_TM_Solver:
         self.len_hx = self.nx_n * self.Ny
         self.len_hy = self.Nx * self.ny_n
         self.len_ez = self.nx_n * self.ny_n
-        self.total_len = self.len_hx + self.len_hy + self.len_ez
-        self.idx_ez = slice(self.len_hx + self.len_hy, self.total_len)
+        # Hx & Hx_dot + Hy & Hy_dot + Ez & Ez_dot & Ez_ddot & Jz:
+        self.total_len = 2 * self.len_hx + 2 * self.len_hy + 4 * self.len_ez
+        ez_start = 2*self.len_hx + 2*self.len_hy
+        self.idx_ez = slice(ez_start, ez_start + self.len_ez)
         
         self._build_system()
 
@@ -54,12 +56,12 @@ class FCI_TM_Solver:
         if self.bc == 'PBC': #to properly see PBC
             return np.zeros(self.len_ez), np.zeros(self.len_ez)
 
-        self.kx = np.ones(self.nx_n)
-        self.ky = np.ones(self.ny_n)
-        self.sx = np.zeros(self.nx_n)
-        self.sy = np.zeros(self.ny_n)
+        self.kx = np.ones((self.nx_n,self.ny_n))
+        self.ky = np.ones((self.nx_n,self.ny_n))
+        self.sx = np.zeros((self.nx_n,self.ny_n))
+        self.sy = np.zeros((self.nx_n,self.ny_n))
 
-        p, m = 25, 4
+        p, m = 10, 4
         k_max = 4
         s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
@@ -74,60 +76,68 @@ class FCI_TM_Solver:
             self.sy[:, i], self.sy[:, -1-i] = val_s, val_s
         
         return self.sx, self.sy, self.kx, self.ky
+    
     def _get_operators(self, n, d):
         if self.bc == 'PBC':
             # PBC matrices:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
-            Ahx = sp.diags([ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr()
-            Ax  = sp.diags([ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr()
-            Atx = sp.diags([ones, ones, ones], [0, -1, n-1], shape=(n, n)).tocsr()
-            Dx  = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr() / d
+            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr() / d
             Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n)).tocsr() / d
-            return Ix, Ahx, Ax, Atx, Dx, Dtx
+            return Ix, Dx, Dtx
         
         else:
-            inv_d = sp.diags(1.0 / d)
-
-            D1_core = sp.diags([1, -1], [0, -1], shape=(n, n-1))
-            D2_core = sp.diags([-1, 1], [0, 1], shape=(n, n+1))
-            D1 = inv_d @ D1_core
-            D2 = inv_d @ D2_core
-
-            return D1, D2
+            Ix = sp.eye(n + 1, format='csr')
+            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
+            Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
+            Dtx[n, n-1] = -2
+            return Ix, Dx.tocsr(), Dtx.tocsr()
 
     def _build_system(self):
         v, c, Z, gamma, dt = self.v_local, self.c, self.Z_local, self.gamma, self.dt
         sx, sy, kx, ky = self._get_pml_profiles()
-        Dx1, Dx2 = self._get_operators(self.Nx, self.dx)
-        Dy1, Dy2 = self._get_operators(self.Ny, self.dy)
-        I = np.eye(self.nx_n,self.ny_n)
+
+        Ix, Dx, Dtx = self._get_operators(self.Nx, self.dx)
+        Iy, Dy, Dty = self._get_operators(self.Ny, self.dy)
         
-        # 2D Operators: Match the field dimensions!
-        DX1_2D = sp.kron(Dx1, sp.eye(self.ny_n)) 
-        DY1_2D = sp.kron(sp.eye(self.nx_n), Dy1)
+        DY_ez_to_hx = sp.kron(Ix, Dy)   # Size: len_hx x len_ez
+        DX_ez_to_hy = sp.kron(Dx, Iy)   # Size: len_hy x len_ez
+        DY_hx_to_ez = sp.kron(Ix, Dty)  # Size: len_ez x len_hx
+        DX_hy_to_ez = sp.kron(Dtx, Iy)  # Size: len_ez x len_hy
+
+        I_hx = sp.eye(self.len_hx, format='csr')
+        I_hy = sp.eye(self.len_hy, format='csr')
+        I_ez = sp.eye(self.len_ez, format='csr')
         
+        N = self.nx_n * self.ny_n
+        I = sp.eye(N, format='csr')
 
         # Update coefficients
-        self.bxp = kx / (v * dt) + Z * sx / 2.0
-        self.byp = ky / (v * dt) + Z * sy / 2.0
-        self.bxm = kx / (v * dt) - Z * sx / 2.0
-        self.bym = ky / (v * dt) - Z * sy / 2.0
+        bxp = (kx / (v * dt) + Z * sx / 2.0).flatten()
+        byp = (ky / (v * dt) + Z * sy / 2.0).flatten()
+        bxm = (kx / (v * dt) - Z * sx / 2.0).flatten()
+        bym = (ky / (v * dt) - Z * sy / 2.0).flatten()
         self.bz_h = 1.0 / (c * dt)
         self.bz_e = 1.0 / (v * dt)
         self.ap = 2.0 * gamma / dt + 1.0
         self.am = 2.0 * gamma / dt - 1.0
-        I_ez = sp.eye(self.nx_n * self.ny_n)
-        BZ_H = sp.diags([self.bz_h] * (self.nx_n * self.ny_n))
 
-        L11, L12 = self.bz_h, -self.bxp
-        L22 = self.byp
-        L33, L34 = self.bxp, -self.byp
-        L44 = self.bz_h
-        L55, L56 = self.byp, -self.bz_e
-        L66, L67 = self.bxp, -I / (c  * dt)
-        L77, L78 = I / (c  * dt), I / 2
-        L87, L88 = - self.sigma, self.ap
+        def to_diag(val, length):
+            if np.isscalar(val):
+                return sp.diags(np.full(length, val), format='csr')
+            else:
+                # MUST flatten() the array before slicing to ensure it is strictly 1D
+                val_flat = np.array(val).flatten()
+                return sp.diags(val_flat[:length], format='csr')
+            
+        L11 = to_diag(1.0/(c*dt), self.len_hx);             L12 = to_diag(-bxp, self.len_hx)
+        L22 = to_diag(byp, self.len_hx)
+        L33 = to_diag(bxp, self.len_hy);                    L34 = to_diag(-byp, self.len_hy)
+        L44 = to_diag(1.0/(c*dt), self.len_hy)
+        L55 = to_diag(byp, self.len_ez);                    L56 = to_diag(-1.0/(v*dt), self.len_ez)
+        L66 = to_diag(bxp, self.len_ez);                    L67 = -I_ez / (c * dt)
+        L77 = I_ez / (c * dt);                              L78 = I_ez / 2.0
+        L87 = to_diag(-self.sigma.flatten(), self.len_ez);  L88 = to_diag(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
@@ -142,29 +152,29 @@ class FCI_TM_Solver:
         ], format='csc')
 
         # RHS uses beta_m and flips signs on derivative terms
-        L11, L12 = self.bz_h, -self.bxm
-        L22, L25 = self.bym, -Dy1
-        L33, L34 = self.bxm, -self.bym
-        L44, L45 = self.bz_h, Dx1
-        L55, L56 = self.bym, -self.bz_e
-        L66, L67 = self.bxm, -I / (c  * dt)
-        L71, L73, L77, L78 = -Dy2, Dx2, I / (c  * dt), -I / 2
-        L87, L88 = self.sigma, self.am
-        
+        R11 = to_diag(1.0/(c*dt), self.len_hx);             R12 = to_diag(-bxm, self.len_hx)
+        R22 = to_diag(bym, self.len_hx);                    R25 = -DY_ez_to_hx
+        R33 = to_diag(bxm, self.len_hy);                    R34 = to_diag(-bym, self.len_hy)
+        R44 = to_diag(1.0/(c*dt), self.len_hy);             R45 = DX_ez_to_hy
+        R55 = to_diag(bym, self.len_ez);                    R56 = to_diag(-1.0/(v*dt), self.len_ez)
+        R66 = to_diag(bxm, self.len_ez);                    R67 = -I_ez / (c * dt)
+        R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;          R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
+        R87 = to_diag(self.sigma.flatten(), self.len_ez);   R88 = to_diag(2.0*gamma/dt - 1.0, self.len_ez)
+
         # Assemble RHS Block Matrix
-        self.LHS = sp.bmat([
-            [L11,  L12,  None, None, None, None, None, None], # hx
-            [None, L22,  None, None, L25,  None, None, None], # hx_dot
-            [None, None, L33,  L34,  None, None, None, None], # hy
-            [None, None, None, L44,  L45,  None, None, None], # hy_dot
-            [None, None, None, None, L55,  L56,  None, None], # ez
-            [None, None, None, None, None, L66,  L67,  None], # ez_dot
-            [L71,  None, L73,  None, None, None, L77,  L78 ], # ez_ddot
-            [None, None, None, None, None, None, L87,  L88 ]  # jz
+        self.RHS = sp.bmat([
+            [R11,  R12,  None, None, None, None, None, None], # hx
+            [None, R22,  None, None, R25,  None, None, None], # hx_dot
+            [None, None, R33,  R34,  None, None, None, None], # hy
+            [None, None, None, R44,  R45,  None, None, None], # hy_dot
+            [None, None, None, None, R55,  R56,  None, None], # ez
+            [None, None, None, None, None, R66,  R67,  None], # ez_dot
+            [R71,  None, R73,  None, None, None, R77,  R78 ], # ez_ddot
+            [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
         print("Pre-factoring the 8x8 system...")
-        self.solver = spla.factorized(self.LHS)
+        self.solve_func = spla.factorized(self.LHS.tocsc())
 
     def run_simulation(self, src_pos):
         u = np.zeros(self.total_len)
@@ -226,13 +236,13 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 200, 
-    'Ny': 200, 
+    'Nx': 100, 
+    'Ny': 100, 
     'Nt': 200, 
     'lambda0': 1.0, 
     'CFL': 2,
-    'Source_loc' : (50,100),
-    'bc': 'PBC'
+    'Source_loc' : (50,50),
+    'bc': 'PEC'
 }
 
 results = FCI_TM_Solver.run_full_analysis(sim_params)
