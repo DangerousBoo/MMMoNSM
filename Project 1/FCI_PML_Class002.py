@@ -194,7 +194,7 @@ class FCI_TM_Solver:
         print("Pre-factoring the 8x8 system...")
         self.solve_func = spla.factorized(self.LHS.tocsc())
 
-    def run_simulation(self, src_pos):
+    def run_simulation(self, src_pos, obs_pos):
         u = np.zeros(self.total_len)
         ez_history = []
         movie_frames = []
@@ -202,6 +202,7 @@ class FCI_TM_Solver:
         # Global index for Ez component at src_pos
         offset = 2 * self.len_hx + 2 * self.len_hy
         x0, y0 = src_pos
+        x_obs, y_obs = obs_pos
 
         # src_idx = offset + x0 * self.ny_n + y0
 
@@ -222,7 +223,7 @@ class FCI_TM_Solver:
 
             u = self.solve_func(b)
             ez_2d = u[self.idx_ez].reshape((self.nx_n, self.ny_n))
-            ez_history.append(ez_2d[x0, y0])
+            ez_history.append(ez_2d[x_obs, y_obs])
             
             if i % 2 == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
@@ -243,16 +244,82 @@ class FCI_TM_Solver:
         plt.grid(True)
         plt.show()
 
+    def verify_with_hankel(self, ez_obs_data, src_pos, obs_pos):
+        import scipy.special as sp_special
+        from scipy.fft import fft, fftfreq
+        
+        # 1. Calculate physical distance (r) between source and observer
+        dx_m = (obs_pos[0] - src_pos[0]) * self.dx
+        dy_m = (obs_pos[1] - src_pos[1]) * self.dy
+        r = np.sqrt(dx_m**2 + dy_m**2)
+        
+        if r == 0:
+            raise ValueError("Observation position must differ from source position (r cannot be 0).")
+
+        # 2. Setup Time and Frequency arrays
+        t = np.arange(self.Nt) * self.dt
+        freqs = fftfreq(self.Nt, self.dt)
+        
+        # 3. FFT of simulation data and the source function
+        src_time = self.my_src(t)
+        Ez_sim_f = fft(ez_obs_data) * self.dt
+        J_src_f = fft(src_time) * self.dt
+        
+        # Avoids division by zero when normalizing.
+        band_idx = np.where((freqs > self.f_c * 0.2) & (freqs < self.f_c * 1.8))[0]
+        f_valid = freqs[band_idx]
+        
+        Ez_sim_valid = Ez_sim_f[band_idx]
+        J_src_valid = J_src_f[band_idx]
+        
+        # Normalize simulated field by the source spectrum
+        H_sim = Ez_sim_valid / J_src_valid
+        
+        # Analytical Solution
+        omega = 2 * np.pi * f_valid
+        k0 = omega / self.c
+        # Formula: -(omega * mu / 4) * H0^(2)(k0 * r)
+        H_analytical = -(omega * self.mu / 4) * sp_special.hankel2(0, k0 * r)
+        
+        # Plotting
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(f_valid, np.abs(H_sim) / np.max(np.abs(H_sim)), label='Simulation', lw=2) # Note: normalize
+        plt.plot(f_valid, np.abs(H_analytical) / np.max(np.abs(H_analytical)), '--', label='Analytical', lw=2)
+        plt.title('Magnitude Response')
+        plt.xlabel('Frequency (Hz)')
+        plt.ylabel('Normalized Magnitude')
+        plt.legend()
+        plt.grid(True)
+        
+        # Phase Plot
+        plt.subplot(1, 2, 2)
+        plt.plot(f_valid, np.unwrap(np.angle(H_sim)), label='Simulation Phase', lw=2)
+        plt.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical Phase', lw=2)
+        plt.title('Phase Response')
+        plt.xlabel('Frequency (Hz)')
+        plt.ylabel('Phase (°)')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+
     @classmethod
     def run_full_analysis(cls, params):
         src_pos = params.pop('Source_loc', (50, 100))
+        obs_pos = params.pop('Obs_loc', (70, 100)) # e.g. 20 cells to the right
         solver = cls(**params)
         
         # Run simulation
-        ani, ez_data = solver.run_simulation(src_pos)
-        # Plot 1D intensity
+        ani, ez_data = solver.run_simulation(src_pos, obs_pos)
+        
+        # Plot 1D intensity at observer
         solver.plot_1d_intensity(solver.dt, ez_data)
-        plt.show()
+        
+        # Verify against analytical Hankel
+        solver.verify_with_hankel(ez_data, src_pos, obs_pos)
+        
         return ez_data
 
 
@@ -263,7 +330,8 @@ sim_params = {
     'lambda0': 1, 
     'CFL': 3,
     'Source_loc' : (50,100),
-    'bc': 'PBC'
+    'Obs_loc' : (100,100),
+    'bc': 'PEC'
 }
 
 results = FCI_TM_Solver.run_full_analysis(sim_params)
