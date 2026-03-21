@@ -19,7 +19,7 @@ class FCI_TM_Solver:
 
         # Material shizzle
         self.eps, self.mu, self.c = 8.854e-12, 1.256e-6, 3e8
-        self.Z0      = np.sqrt(self.mu / self.eps)
+        self.Z0 = np.sqrt(self.mu / self.eps)
 
         self.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
         self.gamma = 0.0
@@ -53,16 +53,13 @@ class FCI_TM_Solver:
                np.exp(-0.5 * ((t - self.t0) / self.sig_t)**2)
 
     def _get_pml_profiles(self):
-        if self.bc == 'PBC': #to properly see PBC
-            return np.zeros(self.len_ez), np.zeros(self.len_ez)
-
         self.kx = np.ones((self.nx_n,self.ny_n))
         self.ky = np.ones((self.nx_n,self.ny_n))
         self.sx = np.zeros((self.nx_n,self.ny_n))
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
         p, m = 20, 4
-        k_max = 4
+        k_max = 1
         s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
         for i in range(p):
@@ -78,13 +75,17 @@ class FCI_TM_Solver:
         return self.sx, self.sy, self.kx, self.ky
     
     def _get_operators(self, n, d):
-        if self.bc == 'PBC':
-            # PBC matrices:
+        if self.bc == 'PBC': # i swear there is something off here cus the wave is "soft" when using these:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
-            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr() / d
-            Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n)).tocsr() / d
-            return Ix, Dx, Dtx
+            
+            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr') / d
+            Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n), format='csr') / d
+            
+            A1 = sp.diags([ones, ones, ones], [0, -1, n-1], shape=(n, n), format='csr')
+            A2 = sp.diags([ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr')
+            
+            return Ix, Dx, Dtx, A1, A2
         
         else:
             Ix = sp.eye(n + 1, format='csr')
@@ -225,8 +226,8 @@ class FCI_TM_Solver:
             
             if i % 2 == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T, cmap='RdBu', origin='lower', animated=True,
-                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.001, vmax=0.001)
+                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
+                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1)
                 movie_frames.append([txt, img])
         
         ani = ArtistAnimation(fig, movie_frames, interval=100, blit=True)
@@ -258,11 +259,11 @@ class FCI_TM_Solver:
 sim_params = {
     'Nx': 200, 
     'Ny': 200, 
-    'Nt': 200, 
+    'Nt': 150, 
     'lambda0': 1, 
     'CFL': 3,
     'Source_loc' : (50,100),
-    'bc': 'PEC'
+    'bc': 'PBC'
 }
 
 results = FCI_TM_Solver.run_full_analysis(sim_params)
