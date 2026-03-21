@@ -14,6 +14,7 @@ class FCI_TM_Solver:
         self.dx, self.dy = lambda0 / 30, lambda0 / 30
         self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
         self.bc = bc.upper()
+        self.sigma = 1e-10 if self.bc == 'PBC' else 0.0
 
         # Source Parameters
         self.f_c    = self.c / self.lambda0
@@ -58,9 +59,14 @@ class FCI_TM_Solver:
         Atx = (sp.eye(n + 1, n + 1) + sp.eye(n + 1, n + 1, k=-1)).tolil()
         Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
         Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
-
-        Dtx[n, n-1] = -2
-        Atx[n, n] = 2
+        
+        if self.bc == 'PBC':
+            Ax[n-1, 0] = 1 
+            Dtx[0, n-1] = -1
+            Atx[0, n-1] = 1
+        else:
+            Dtx[n, n-1] = -2
+            Atx[n, n] = 2
         
         return Ix, Ahx, Ax, Atx.tocsr(), Dx.tocsr(), Dtx.tocsr() / d
 
@@ -96,6 +102,29 @@ class FCI_TM_Solver:
                             [None, R22, R23], 
                             [R31, R32, R33]], 
                             format='csr').tolil()
+        
+        if self.bc == 'PBC':
+            # --- Apply Exact Algebraic Boundary Constraints (Var[N] - Var[0] = 0) ---
+            def apply_pbc(idx_dup, idx_src):
+                LHS[idx_dup, :] = 0
+                self.RHS[idx_dup, :] = 0
+                LHS[idx_dup, idx_dup] = 1
+                LHS[idx_dup, idx_src] = -1
+            
+            # 1. Hx wrapping in X
+            for j in range(self.Ny):
+                apply_pbc(self.Nx * self.Ny + j, 0 * self.Ny + j)
+                
+            # 2. Hy wrapping in Y
+            for i in range(self.Nx):
+                apply_pbc(self.len_hx + i * (self.Ny + 1) + self.Ny, self.len_hx + i * (self.Ny + 1) + 0)
+                
+            # 3. Ez wrapping in X and Y
+            ez_off = self.len_hx + self.len_hy
+            for j in range(self.Ny + 1): # Map right edge to left edge
+                apply_pbc(ez_off + self.Nx * (self.Ny + 1) + j, ez_off + 0 * (self.Ny + 1) + j)
+            for i in range(self.Nx):     # Map top edge to bottom edge
+                apply_pbc(ez_off + i * (self.Ny + 1) + self.Ny, ez_off + i * (self.Ny + 1) + 0)
 
         self.solve_func = spla.factorized(LHS.tocsc())
         self.RHS = self.RHS.tocsr()
@@ -138,7 +167,7 @@ class FCI_TM_Solver:
 
     @classmethod
     def run_full_analysis(cls, params):
-        src_pos = params.pop('Source_loc', (50, 100))
+        src_pos = params.pop('src_pos', (params['Nx']//2, params['Ny']//2))
         solver = cls(**params)
         
         # Run simulation
@@ -155,7 +184,6 @@ sim_params = {
     'Nt': 200, 
     'lambda0': 1.0, 
     'CFL': 2,
-    'Source_loc' : (100,100),
     'bc': 'PBC'
 }
 
