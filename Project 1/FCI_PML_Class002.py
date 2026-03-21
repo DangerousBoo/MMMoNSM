@@ -31,7 +31,7 @@ class FCI_TM_Solver:
         # Source Parameters
         self.f_c    = self.c / self.lambda0
         self.A      = 1.0
-        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
+        self.a      = 4 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
 
@@ -203,7 +203,7 @@ class FCI_TM_Solver:
         x0, y0 = src_pos
 
         # src_idx = offset + x0 * self.ny_n + y0
-        
+
         shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
         neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
         weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
@@ -225,8 +225,8 @@ class FCI_TM_Solver:
             
             if i % 2 == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
-                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1)
+                img = ax.imshow(ez_2d.T, cmap='RdBu', origin='lower', animated=True,
+                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.001, vmax=0.001)
                 movie_frames.append([txt, img])
         
         ani = ArtistAnimation(fig, movie_frames, interval=100, blit=True)
@@ -259,8 +259,8 @@ sim_params = {
     'Nx': 200, 
     'Ny': 200, 
     'Nt': 200, 
-    'lambda0': 1.0, 
-    'CFL': 2,
+    'lambda0': 1, 
+    'CFL': 3,
     'Source_loc' : (50,100),
     'bc': 'PEC'
 }
