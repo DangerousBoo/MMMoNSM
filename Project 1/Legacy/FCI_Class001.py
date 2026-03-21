@@ -155,8 +155,8 @@ sim_params = {
     'Nt': 200, 
     'lambda0': 1.0, 
     'CFL': 2,
-    'Source_loc' : (100,100),
-    'bc': 'PBC'
+    'Source_loc' : (50,100),
+    'bc': 'PEC'
 }
 
 results = FCI_TM_Solver.run_full_analysis(sim_params)
