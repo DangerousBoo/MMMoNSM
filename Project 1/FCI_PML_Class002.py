@@ -7,17 +7,26 @@ from matplotlib.animation import ArtistAnimation
 
 class FCI_TM_Solver:
     def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC'):
-        # Constants & Parameters
-        self.eps, self.mu, self.sigma, self.c = 8.854e-12, 1.256e-6, 0.0, 3e8 # Set sigma=0 for no dampening
+        # Parameters
         self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
         self.lambda0, self.CFL = lambda0, CFL
         self.dx, self.dy = lambda0 / 30, lambda0 / 30
-        self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
         self.bc = bc.upper()
 
         # PBC drops the redundant N+1 boundary node to form a perfect ring
         self.nx_n = self.Nx if self.bc == 'PBC' else self.Nx + 1
         self.ny_n = self.Ny if self.bc == 'PBC' else self.Ny + 1
+
+        # Material shizzle
+        self.eps, self.mu, self.c = 8.854e-12, 1.256e-6, 3e8
+        self.Z0      = np.sqrt(self.mu / self.eps)
+
+        self.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
+        self.gamma = 0.0
+        self.epsilon_r  = np.ones((self.nx_n, self.ny_n))
+
+        self.v_local = self.c / np.sqrt(self.epsilon_r)
+        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
         
         # Source Parameters
         self.f_c    = self.c / self.lambda0
@@ -27,6 +36,7 @@ class FCI_TM_Solver:
         self.t0     = 4 * self.sig_t
 
         # Component lengths
+        self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
         self.len_hx = self.nx_n * self.Ny
         self.len_hy = self.Nx * self.ny_n
         self.len_ez = self.nx_n * self.ny_n
@@ -44,20 +54,26 @@ class FCI_TM_Solver:
         if self.bc == 'PBC': #to properly see PBC
             return np.zeros(self.len_ez), np.zeros(self.len_ez)
 
-        sx = np.zeros((self.nx_n, self.ny_n))
-        sy = np.zeros((self.nx_n, self.ny_n))
+        self.kx = np.ones(self.nx_n)
+        self.ky = np.ones(self.ny_n)
+        self.sx = np.zeros(self.nx_n)
+        self.sy = np.zeros(self.ny_n)
+
         p, m = 25, 4
-        eta_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
+        k_max = 4
+        s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
         for i in range(p):
-            d = (p - i) / p
-            val = eta_max * d ** m
-            sx[i, :] = val # Left
-            sx[-1-i, :] = val # Right
-            sy[:, i] = val # Bottom
-            sy[:, -1-i] = val # Top
-        return sx.flatten(), sy.flatten()
+            d_pml = (p - i) / p
+            val_k = 1.0 + (k_max - 1.0) * (d_pml**m)
+            val_s = s_max * (d_pml**m)
+
+            self.kx[i, :], self.kx[-1-i, :] = val_k, val_k
+            self.ky[:, i], self.ky[:, -1-i] = val_k, val_k
+            self.sx[i, :], self.sx[-1-i, :] = val_s, val_s
+            self.sy[:, i], self.sy[:, -1-i] = val_s, val_s
         
+        return self.sx, self.sy, self.kx, self.ky
     def _get_operators(self, n, d):
         if self.bc == 'PBC':
             # PBC matrices:
@@ -69,52 +85,86 @@ class FCI_TM_Solver:
             Dx  = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n)).tocsr() / d
             Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n)).tocsr() / d
             return Ix, Ahx, Ax, Atx, Dx, Dtx
+        
         else:
-            # PEC matrices:
-            Ix = sp.eye(n + 1, format='csr')
-            Ahx = (sp.eye(n, n + 1, k=0) + sp.eye(n, n + 1, k=1)).tocsr()
-            Ax = (sp.eye(n, n) + sp.eye(n, n, k=1)).tocsr()
-            Atx = (sp.eye(n + 1, n + 1) + sp.eye(n + 1, n + 1, k=-1)).tolil()
-            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
-            Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
-            Dtx[n, n-1] = -2
-            Atx[n, n] = 2
-            return Ix, Ahx, Ax, Atx.tocsr(), Dx.tocsr(), Dtx.tocsr() / d
+            inv_d = sp.diags(1.0 / d)
+
+            D1_core = sp.diags([1, -1], [0, -1], shape=(n, n-1))
+            D2_core = sp.diags([-1, 1], [0, 1], shape=(n, n+1))
+            D1 = inv_d @ D1_core
+            D2 = inv_d @ D2_core
+
+            return D1, D2
 
     def _build_system(self):
-        s_x, s_y = self._get_pml_profiles()
-        Ix, Ahx, Ax, Atx, Dx, Dtx = self._get_operators(self.Nx, self.dx)
-        Iy, Ahy, Ay, Aty, Dy, Dty = self._get_operators(self.Ny, self.dy)
-
-
-        Ezz_p = (self.eps / self.dt + self.sigma / 2) * sp.eye(self.len_ez) + sp.diags((s_x + s_y) / 2)
-        Ezz_m = (self.eps / self.dt - self.sigma / 2) * sp.eye(self.len_ez) - sp.diags((s_x + s_y) / 2)
-
-        mux_diag = (self.mu / self.dt) + s_x / 2
-        muy_diag = (self.mu / self.dt) + s_y / 2
-        Mxx = sp.diags(mux_diag.repeat(self.Ny) if len(mux_diag) < self.len_hx else mux_diag[:self.len_hx])
-        Mxx = (self.mu / self.dt) * sp.eye(self.len_hx) + sp.diags(np.zeros(self.len_hx)) # Placeholder for complex H-stretch
-        Myy = (self.mu / self.dt) * sp.eye(self.len_hy)
-
-        # LHS
-        L11, L13 = sp.kron(Ix, Ay) @ Mxx, sp.kron(Ix, Dy)
-        L22, L23 = sp.kron(Ax, Iy) @ Myy, -sp.kron(Dx, Iy)
-        L31, L32, L33 = sp.kron(Atx, Dty), -sp.kron(Dtx, Aty), sp.kron(Atx, Aty) @ Ezz_p
-        LHS = sp.bmat([[L11, None, L13], 
-                       [None, L22, L23], 
-                       [L31, L32, L33]], 
-                       format='csr')
+        v, c, Z, gamma, dt = self.v_local, self.c, self.Z_local, self.gamma, self.dt
+        sx, sy, kx, ky = self._get_pml_profiles()
+        Dx1, Dx2 = self._get_operators(self.Nx, self.dx)
+        Dy1, Dy2 = self._get_operators(self.Ny, self.dy)
+        I = np.eye(self.nx_n,self.ny_n)
         
-        # RHS
-        R11, R13 = sp.kron(Ix, Ay) @ Mxx, -sp.kron(Ix, Dy)
-        R22, R23 = sp.kron(Ax, Iy) @ Myy, sp.kron(Dx, Iy)
-        R31, R32, R33 = -sp.kron(Atx, Dty), sp.kron(Dtx, Aty), sp.kron(Atx, Aty) @ Ezz_m
-        self.RHS = sp.bmat([[R11, None, R13],
-                            [None, R22, R23], 
-                            [R31, R32, R33]], 
-                            format='csr')
+        # 2D Operators: Match the field dimensions!
+        DX1_2D = sp.kron(Dx1, sp.eye(self.ny_n)) 
+        DY1_2D = sp.kron(sp.eye(self.nx_n), Dy1)
+        
 
-        self.solve_func = spla.factorized(LHS.tocsc())
+        # Update coefficients
+        self.bxp = kx / (v * dt) + Z * sx / 2.0
+        self.byp = ky / (v * dt) + Z * sy / 2.0
+        self.bxm = kx / (v * dt) - Z * sx / 2.0
+        self.bym = ky / (v * dt) - Z * sy / 2.0
+        self.bz_h = 1.0 / (c * dt)
+        self.bz_e = 1.0 / (v * dt)
+        self.ap = 2.0 * gamma / dt + 1.0
+        self.am = 2.0 * gamma / dt - 1.0
+        I_ez = sp.eye(self.nx_n * self.ny_n)
+        BZ_H = sp.diags([self.bz_h] * (self.nx_n * self.ny_n))
+
+        L11, L12 = self.bz_h, -self.bxp
+        L22 = self.byp
+        L33, L34 = self.bxp, -self.byp
+        L44 = self.bz_h
+        L55, L56 = self.byp, -self.bz_e
+        L66, L67 = self.bxp, -I / (c  * dt)
+        L77, L78 = I / (c  * dt), I / 2
+        L87, L88 = - self.sigma, self.ap
+
+        # Assemble LHS Block Matrix
+        self.LHS = sp.bmat([
+            [L11,  L12,  None, None, None, None, None, None], # hx
+            [None, L22,  None, None, None, None, None, None], # hx_dot
+            [None, None, L33,  L34,  None, None, None, None], # hy
+            [None, None, None, L44,  None, None, None, None], # hy_dot
+            [None, None, None, None, L55,  L56,  None, None], # ez
+            [None, None, None, None, None, L66,  L67,  None], # ez_dot
+            [None, None, None, None, None, None, L77,  L78 ], # ez_ddot
+            [None, None, None, None, None, None, L87,  L88 ]  # jz
+        ], format='csc')
+
+        # RHS uses beta_m and flips signs on derivative terms
+        L11, L12 = self.bz_h, -self.bxm
+        L22, L25 = self.bym, -Dy1
+        L33, L34 = self.bxm, -self.bym
+        L44, L45 = self.bz_h, Dx1
+        L55, L56 = self.bym, -self.bz_e
+        L66, L67 = self.bxm, -I / (c  * dt)
+        L71, L73, L77, L78 = -Dy2, Dx2, I / (c  * dt), -I / 2
+        L87, L88 = self.sigma, self.am
+        
+        # Assemble RHS Block Matrix
+        self.LHS = sp.bmat([
+            [L11,  L12,  None, None, None, None, None, None], # hx
+            [None, L22,  None, None, L25,  None, None, None], # hx_dot
+            [None, None, L33,  L34,  None, None, None, None], # hy
+            [None, None, None, L44,  L45,  None, None, None], # hy_dot
+            [None, None, None, None, L55,  L56,  None, None], # ez
+            [None, None, None, None, None, L66,  L67,  None], # ez_dot
+            [L71,  None, L73,  None, None, None, L77,  L78 ], # ez_ddot
+            [None, None, None, None, None, None, L87,  L88 ]  # jz
+        ], format='csc')
+
+        print("Pre-factoring the 8x8 system...")
+        self.solver = spla.factorized(self.LHS)
 
     def run_simulation(self, src_pos):
         u = np.zeros(self.total_len)
