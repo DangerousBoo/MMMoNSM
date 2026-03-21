@@ -81,8 +81,8 @@ class FCI_TM_Solver:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
-            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr') / d
-            Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n), format='csr') / d
+            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr') / (2*d)
+            Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n), format='csr') / (2*d)
             
             A1 = sp.diags([ones, ones, ones], [0, -1, n-1], shape=(n, n), format='csr')
             A2 = sp.diags([ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr')
@@ -91,9 +91,9 @@ class FCI_TM_Solver:
         
         else:
             Ix = sp.eye(n + 1, format='csr')
-            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
-            Dtx = (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)).tolil()
-            Dtx[n, n-1] = -2
+            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / (2*d)
+            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
+            Dtx[n, n-1] = - 1 / d
 
             A1 = sp.diags([1, 1], [0, -1], shape=(n, n-1), format='csr')
             A2 = sp.diags([1, 1], [0, 1], shape=(n, n+1), format='csr')
@@ -220,7 +220,7 @@ class FCI_TM_Solver:
 
             #Smooth source over a couple of grid points to prevent checkerboarding
             src_val = self.my_src(t)
-            b[src_idx] += src_val
+            b[src_idx] -= src_val
             # for idx, w in zip(neighbors, weights):
             #     b[idx] += src_val * w
 
