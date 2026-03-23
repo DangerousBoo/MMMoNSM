@@ -1,9 +1,6 @@
-from logging import config
-
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from matplotlib.animation import ArtistAnimation
 from matplotlib.animation import FuncAnimation
 
 ################################################################################################################################################
@@ -46,7 +43,7 @@ class SimulationConfig:
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
         
         # Grid refinement
-        self.finesse = 30 #dictates how many cells per central wavelength
+        self.finesse = 30 # Dictates how many cells per central wavelength
         
         # Give possibility to change parameters via kwargs
         for key, value in kwargs.items():
@@ -54,34 +51,61 @@ class SimulationConfig:
         
         self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
 
-        # Grid Size
+        self.alpha = np.sqrt(2)
         
-        # X axis
-        self.dx_0   = self.lam_c / self.finesse
-        self.alpha  = np.sqrt(2)
+        # Build Grids
+        self._build_dx()
+        self._build_dy()
         
-        self.n_Ll   = int(np.ceil(self.Ll / self.dx_0))
-        self.dx     = np.full(self.n_Ll, self.Ll / self.n_Ll)
+        self.nx = len(self.dx) + 1
+        self.ny = len(self.dy) + 1
+        
+        self.epsilon_r  = np.ones((self.nx, self.ny))
+        self.sigma      = np.zeros((self.nx-2, self.ny-2))
+        
+        self.v_local = self.c / np.sqrt(self.epsilon_r)
+        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
+        
+        # Grid Spacing (Non-uniform)
+        self.dx_f = self.dx.min()
+        self.dy_f = self.dy.min()
+        
+        self.x0, self.y0 = self.n_Ll, self.ny // 2 # Source location
+        self.x1 = self.nx - 50 # Recorder location
+
+        self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
+        self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
+
+        # Time Stepping
+        CFL = 1.0
+        self.dt  = CFL / (self.c * np.sqrt((1/self.dx.min()**2) + (1/self.dy.min()**2)))
+        self.setup_waveguide()
+        
+    def _build_dx(self):
+        """Constructs the non-uniform grid in the x-direction."""
+        self.dx_0 = self.lam_c / self.finesse
+        
+        self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
+        self.dx = np.full(self.n_Ll, self.Ll / self.n_Ll)
         
         self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
-        self.n_d    = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
-        self.dx     = np.concatenate((self.dx, np.full(int(self.n_d - self.n_f_dt), self.d / (self.n_d - self.n_f_dt))))
-        self.dx     = np.concatenate((self.dx, self.alpha **np.arange(self.n_f_dt, -1, -1) * self.t_m))
+        self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
+        self.dx = np.concatenate((self.dx, np.full(int(self.n_d - self.n_f_dt), self.d / (self.n_d - self.n_f_dt))))
+        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m))
         
         self.L_f_twg, self.n_f_twg = self.L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
-        self.n_wg   = np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg
-        self.dx     = np.concatenate((self.dx, self.alpha ** np.arange(1,self.n_f_twg + 1) * self.t_m))
-        self.dx     = np.concatenate((self.dx, np.full(int(self.n_wg - self.n_f_twg), self.L_wg / self.n_wg)))
+        self.n_wg = np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg
+        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m))
+        self.dx = np.concatenate((self.dx, np.full(int(self.n_wg - self.n_f_twg), self.L_wg / self.n_wg)))
         
         self.L_f_wg_Lr, self.n_f_wg_Lr = self.L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
-        self.n_Lr   = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
-        self.dx     = np.concatenate((self.dx, self.alpha ** np.arange(1,self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core)))
-        self.dx     = np.concatenate((self.dx, np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))))
-        
-        self.nx = len(self.dx)+1
-        
-        # Y axis
-        self.dy_0   = self.lam_c / 30
+        self.n_Lr = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
+        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core)))
+        self.dx = np.concatenate((self.dx, np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))))
+
+    def _build_dy(self):
+        """Constructs the non-uniform grid in the y-direction."""
+        self.dy_0 = self.lam_c / 30
         
         self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
         self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
@@ -105,59 +129,16 @@ class SimulationConfig:
             self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
             self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
             self.dy = np.concatenate((self.dy, np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))
-            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_cc,0, -1) * self.dy_core))
+            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core))
             
             self.n_core = int(np.ceil(self.w_core / self.dy_core))
             self.dy = np.concatenate((self.dy, np.full(self.n_core, self.w_core / self.n_core)))
             
-            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1,self.n_f_cc + 1) * self.dy_core))
+            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core))
             self.dy = np.concatenate((self.dy, np.full(int(self.n_clad - self.n_f_cc), (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))       
             
-        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1,self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad)))
+        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad)))
         self.dy = np.concatenate((self.dy, np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))))
-        
-        self.ny = len(self.dy) + 1
-        
-        self.epsilon_r  = np.ones((self.nx, self.ny))
-        self.sigma      = np.zeros((self.nx-2, self.ny-2))
-        
-        
-        self.v_local = self.c / np.sqrt(self.epsilon_r)
-        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
-        
-        # Grid Spacing (Non-uniform x)
-        self.dx_f = self.dx.min()
-        self.dy_f = self.dy.min()
-        
-        # # Grid Refinement Logic
-        # alpha    = np.sqrt(2)
-        # self.n_w = self.nx - self.L
-        # nf_x     = int(np.ceil(np.log(self.dx_0 / self.dx_f) / np.log(alpha)))
-        # nf_y     = int(np.ceil(np.log(self.dy_0 / self.dy_f) / np.log(alpha)))
-        # dist_x   = np.arange(-nf_x + 1, nf_x)
-        # dist_y   = np.arange(0, nf_y)
-        
-        # if len(dist_x) > 0:
-        #     self.dx[self.n_w - nf_x + 1: self.n_w + nf_x] = self.dx_f * alpha ** np.abs(dist_x)
-        #     self.dx[self.n_w] = self.dx_f
-        # if len(dist_y) > 0:
-        #     ys = int(self.ny // 2 - 2 * self.d)
-        #     ye = ys + 4 * self.d
-        #     rev_dist = np.arange(nf_y)[::-1]
-        #     self.dy[ys - nf_y : ys] = self.dy_f * alpha ** rev_dist
-        #     self.dy[ys : ye] = self.dy_f
-        #     self.dy[ye : ye + nf_y] = self.dy_f * alpha ** np.arange(nf_y)
-
-        self.x0, self.y0 = self.n_Ll, self.ny // 2 # Source location
-        self.x1 = self.nx - 50 # Recorder location
-
-        self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
-        self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
-
-        # Time Stepping
-        CFL = 1.0
-        self.dt  = CFL / (self.c * np.sqrt((1/self.dx.min()**2) + (1/self.dy.min()**2)))
-        self.setup_waveguide()
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
         
@@ -176,6 +157,7 @@ class SimulationConfig:
             
         self.sigma[int(self.n_Ll + self.n_d - 1),:int(self.n_air + self.n_clad)] = 3.5e7 #conductivity of aluminum
         self.sigma[int(self.n_Ll + self.n_d - 1), - int(self.n_air + self.n_clad):] = 3.5e7
+        
 ################################################################################################################################################
 #                                                          Yee Solver Class:
 ################################################################################################################################################
@@ -260,33 +242,33 @@ class YeeSolver:
 
         # Magnetic Field Update
         self.Hx_dot_old[:] = self.Hx_dot
-        self.Hx_dot = (self.bym_hx * self.Hx_dot - (self.Ez[:, 1:] - self.Ez[:, :-1]) * self.inv_dy[None, :]) / self.byp_hx
+        diff_Ez_y = self.Ez[:, 1:] - self.Ez[:, :-1]
+        self.Hx_dot = (self.bym_hx * self.Hx_dot - diff_Ez_y * self.inv_dy[None, :]) / self.byp_hx
         self.Hx += (self.bxp_hx * self.Hx_dot - self.bxm_hx * self.Hx_dot_old) / self.bz_h
 
         self.Hy_dot_old[:] = self.Hy_dot
-        self.Hy_dot += (self.Ez[1:, :] - self.Ez[:-1, :]) * self.inv_dx[:, None] / self.bz_h
+        diff_Ez_x = self.Ez[1:, :] - self.Ez[:-1, :]
+        self.Hy_dot += diff_Ez_x * self.inv_dx[:, None] / self.bz_h
         self.Hy = (self.bxm_hy * self.Hy + (self.byp_hy * self.Hy_dot - self.bym_hy * self.Hy_dot_old)) / self.bxp_hy
 
         # Electric Field Update
-        curl_h = (self.Hy[1:, iy] - self.Hy[:-1, iy]) * self.inv_dx_d[ix, None] - \
-                (self.Hx[ix, 1:] - self.Hx[ix, :-1]) * self.inv_dy_d[None, iy]
+        diff_Hy_x = self.Hy[1:, iy] - self.Hy[:-1, iy]
+        diff_Hx_y = self.Hx[ix, 1:] - self.Hx[ix, :-1]
+        curl_h = diff_Hy_x * self.inv_dx_d[ix, None] - diff_Hx_y * self.inv_dy_d[None, iy]
         
         self.Ez_ddot_old[:] = self.Ez_ddot
         self.Ez_ddot[ix, iy] = (self.coef_n * self.Ez_ddot[ix, iy] - self.coef_j * self.Jc[ix, iy] + curl_h) / self.coef_p
         
-        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * (self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy])) / self.ap
+        avg_Ez_ddot = self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy]
+        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
         
         self.Ez_dot_old[:] = self.Ez_dot
-        self.Ez_dot[ix, iy] = (self.bxm[ix, iy] * self.Ez_dot[ix, iy] + 
-                                   (self.Ez_ddot[ix, iy] - self.Ez_ddot_old[ix, iy]) / (cfg.v_local[ix, iy] * cfg.dt)) / self.bxp[ix, iy]
+        diff_Ez_ddot = self.Ez_ddot[ix, iy] - self.Ez_ddot_old[ix, iy]
+        self.Ez_dot[ix, iy] = (self.bxm[ix, iy] * self.Ez_dot[ix, iy] + diff_Ez_ddot / (cfg.v_local[ix, iy] * cfg.dt)) / self.bxp[ix, iy]
 
-        self.Ez[ix, iy] = (self.bym[ix, iy] * self.Ez[ix, iy] + 
-                               self.bz_e[ix, iy] * (self.Ez_dot[ix, iy] - self.Ez_dot_old[ix, iy])) / self.byp[ix, iy]
+        diff_Ez_dot = self.Ez_dot[ix, iy] - self.Ez_dot_old[ix, iy]
+        self.Ez[ix, iy] = (self.bym[ix, iy] * self.Ez[ix, iy] + self.bz_e[ix, iy] * diff_Ez_dot) / self.byp[ix, iy]
         
-        # # Boundary Conditions (Wall)
-        # self.Ez[cfg.n_Ll + cfg.n_d, :cfg.y_gap_top] = 0
-        # self.Ez[cfg.n_w, cfg.y_gap_bot:] = 0
-
         # Source
         src = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
         self.Ez[cfg.x0, cfg.y0] -= cfg.dx[cfg.x0] * cfg.dy[cfg.y0] * src / self.coef_p[cfg.x0-1, cfg.y0-1]
@@ -313,7 +295,7 @@ class SimulationRunner:
         recorder_plane = np.zeros((config.nt, config.ny), dtype=np.float32)
         
         # 4. Run Simulation Loop
-        for it in tqdm(range(config.nt), desc=f"Simulating Robin die vliegt (nt={config.nt})"):
+        for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
             t = it * config.dt
             solver.step(t)
             
@@ -450,7 +432,7 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
-    print("Robin is een duif")
-    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=1500, wg_type = "grin", finesse = 10, eps_core=1.11, eps_clad=1.1)
-    print("Robin is geland")
+    print("Starting simulation...")
+    results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="grin", finesse=10, eps_core=1.11, eps_clad=1.1)
+    print("Simulation finished.")
 
