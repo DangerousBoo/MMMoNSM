@@ -264,7 +264,7 @@ class SimulationRunner:
         
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
-                             shading='nearest', cmap='RdBu_r', vmin=-1e-7, vmax=1e-7)
+                             shading='nearest', cmap='RdBu_r', vmin=-0.01, vmax=0.01)
         time_text = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
 
         def update(i):
@@ -361,5 +361,5 @@ class SimulationRunner:
         return data
 
 if __name__ == "__main__":
-    results = SimulationRunner.run_full_analysis(speed = 200 , nt=200, d=30)
+    results = SimulationRunner.run_full_analysis(speed = 100 , nt=1500, d=20)
 

@@ -99,6 +99,7 @@ class FCI_TM_Solver:
             t = i * self.dt
             b = self.RHS.dot(u)
             b[src_global_idx] += src_func(t)
+            b[src_global_idx + 2] += src_func(t)
             u = self.solve_func(b)
             
             ez_2d = u[self.idx_ez].reshape((self.Nx, self.Ny))

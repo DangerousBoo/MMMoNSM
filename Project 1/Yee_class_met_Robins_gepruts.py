@@ -451,6 +451,6 @@ class SimulationRunner:
 
 if __name__ == "__main__":
     print("Robin is een duif")
-    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=100, wg_type = "step", finesse = 10)
+    results = SimulationRunner.run_full_analysis(speed = 2000 , nt=1500, wg_type = "grin", finesse = 10, eps_core=1.11, eps_clad=1.1)
     print("Robin is geland")
 

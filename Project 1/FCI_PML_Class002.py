@@ -42,6 +42,7 @@ class FCI_TM_Solver:
         self.len_hx = self.nx_n * self.Ny
         self.len_hy = self.Nx * self.ny_n
         self.len_ez = self.nx_n * self.ny_n
+        
         # Hx & Hx_dot + Hy & Hy_dot + Ez & Ez_dot & Ez_ddot & Jz:
         self.total_len = 2 * self.len_hx + 2 * self.len_hy + 4 * self.len_ez
         ez_start = 2*self.len_hx + 2*self.len_hy
@@ -77,7 +78,7 @@ class FCI_TM_Solver:
         return self.sx, self.sy, self.kx, self.ky
     
     def _get_operators(self, n, d):
-        if self.bc == 'PBC': # i swear there is something off here cus the wave is "soft" when using these:
+        if self.bc == 'PBC':
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
@@ -91,6 +92,7 @@ class FCI_TM_Solver:
         
         else:
             Ix = sp.eye(n + 1, format='csr')
+
             Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / (2*d)
             Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
             Dtx[n, n-1] = - 1 / d
@@ -318,7 +320,7 @@ class FCI_TM_Solver:
     @classmethod
     def run_full_analysis(cls, params):
         src_pos = params.pop('Source_loc', (50, 100))
-        obs_pos = params.pop('Obs_loc', (70, 100)) # e.g. 20 cells to the right
+        obs_pos = params.pop('Obs_loc', (70, 100))
         solver = cls(**params)
         
         # Run simulation
@@ -341,7 +343,7 @@ sim_params = {
     'CFL': 2,
     'Source_loc' : (50,100),
     'Obs_loc' : (80,100),
-    'bc': 'PEC'
+    'bc': 'PBC'
 }
 
 results = FCI_TM_Solver.run_full_analysis(sim_params)
