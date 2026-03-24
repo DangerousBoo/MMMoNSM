@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from tqdm import tqdm
 import scipy.sparse as sp
@@ -8,12 +9,13 @@ import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
 
 class FCI_TM_Solver:
-    def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC'):
+    def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver = "default"):
         # Parameters
         self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
         self.lambda0, self.CFL = lambda0, CFL
         self.dx, self.dy = lambda0 / 30, lambda0 / 30
         self.bc = bc.upper()
+        self.solver = solver
 
         # PBC drops the redundant N+1 boundary node to form a perfect ring
         self.nx_n = self.Nx if self.bc == 'PBC' else self.Nx + 1
@@ -82,11 +84,11 @@ class FCI_TM_Solver:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
-            Dx = sp.diags([-ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr') / (2*d)
-            Dtx = sp.diags([ones, -ones, -ones], [0, -1, n-1], shape=(n, n), format='csr') / (2*d)
+            Dx = sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr') / (2*d)
+            Dtx = sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr') / (2*d)
             
-            A1 = sp.diags([ones, ones, ones], [0, -1, n-1], shape=(n, n), format='csr')
-            A2 = sp.diags([ones, ones, ones], [0, 1, 1-n], shape=(n, n), format='csr')
+            A1 = sp.diags_array([ones, ones, ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
+            A2 = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
             
             return Ix, Dx, Dtx, A1, A2
         
@@ -97,8 +99,8 @@ class FCI_TM_Solver:
             Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
             Dtx[n, n-1] = - 1 / d
 
-            A1 = sp.diags([1, 1], [0, -1], shape=(n, n-1), format='csr')
-            A2 = sp.diags([1, 1], [0, 1], shape=(n, n+1), format='csr')
+            A1 = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
+            A2 = sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
 
             return Ix, Dx.tocsr(), Dtx.tocsr(), A1.tocsr(), A2.tocsr()
 
@@ -146,11 +148,11 @@ class FCI_TM_Solver:
         self.am = 2.0 * gamma / dt - 1.0
 
         def to_diag_vec(vec):
-            return sp.diags(vec, format='csr')
+            return sp.diags_array(vec, format='csr')
             
         def to_diag_scal(val, length):
             val_flat = np.array(val).flatten()
-            return sp.diags(np.full(length, val_flat), format='csr')
+            return sp.diags_array(np.full(length, val_flat), format='csr')
             
         L11 = to_diag_scal(1.0/(c*dt), self.len_hx);    L12 = to_diag_vec(-bxp_hx)
         L22 = to_diag_vec(byp_hx);                      L25 = DY_ez_to_hx
@@ -158,7 +160,7 @@ class FCI_TM_Solver:
         L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -DX_ez_to_hy
         L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
         L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
-        L71 = DY_hx_to_ez; L73 = -DX_hy_to_ez; L77 = I_ez / (c * dt); L78 = I_ez / 2.0
+        L71 = DY_hx_to_ez;      L73 = -DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
         L87 = to_diag_vec(-self.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
@@ -195,8 +197,53 @@ class FCI_TM_Solver:
             [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
-        print("Pre-factoring the 8x8 system...")
-        self.solve_func = spla.factorized(self.LHS.tocsc())
+        if self.solver == "default":
+            print("Pre-factoring the 8x8 system...")
+            self.solve_func = spla.factorized(self.LHS.tocsc())
+
+        elif self.solver == "Schur":
+            print("Pre-factoring the 8x8 system using Schur complement...")
+            
+            # Extract blocks
+            M11 = self.LHS[:2*self.len_hx + 2*self.len_hy, :2*self.len_hx + 2*self.len_hy].tocsc()
+            M12 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:].tocsc()
+            M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
+            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:].tocsc()
+
+            L11_inv = sp.diags_array(1.0/L11.diagonal(), format='csc')
+            L22_inv = sp.diags_array(1.0/L22.diagonal(), format='csc')
+            L33_inv = sp.diags_array(1.0/L33.diagonal(), format='csc')
+            L44_inv = sp.diags_array(1.0/L44.diagonal(), format='csc')
+
+            # Invert M11
+            M11_inv = sp.bmat([
+                [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
+                [None,      L22_inv,                  None,       None],
+                [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
+                [None,      None,                     None,       L44_inv]
+            ], format='csc')
+
+            # Precompute S = M22 - M21 * M11_inv * M12
+            S = M22 - M21 @ M11_inv @ M12
+            S_fact = spla.factorized(S.tocsc())
+
+            # Define the solver function
+            def solve_schur(b):
+                # Split b into b1 and b2
+                b1 = b[:2*self.len_hx + 2*self.len_hy]
+                b2 = b[2*self.len_hx + 2*self.len_hy:]
+
+                # Solve for u2 = S_inv* (b2 - M21 * M11_inv * b1)
+                u2 = S_fact(b2 - M21 @ M11_inv @ b1)
+
+                # Solve for u1 = M11_inv * (b1 - M12 * u2)
+                u1 = M11_inv @ (b1 - M12 @ u2)
+
+                # Combine to get full solution
+                return np.concatenate([u1, u2])
+
+            self.solve_func = solve_schur
+            
 
     def run_simulation(self, src_pos, obs_pos):
         u = np.zeros(self.total_len)
@@ -321,10 +368,15 @@ class FCI_TM_Solver:
     def run_full_analysis(cls, params):
         src_pos = params.pop('Source_loc', (50, 100))
         obs_pos = params.pop('Obs_loc', (70, 100))
+        
+        t0 = time.time()
         solver = cls(**params)
         
         # Run simulation
         ani, ez_data = solver.run_simulation(src_pos, obs_pos)
+        t1 = time.time()
+        exec_time = t1 - t0
+        print(f"\n>>> [{solver.solver} solver] Execution time (Setup + Sim): {exec_time:.4f} seconds <<<\n")
         
         # Plot 1D intensity at observer
         solver.plot_1d_intensity(solver.dt, ez_data)
@@ -332,18 +384,37 @@ class FCI_TM_Solver:
         # Verify against analytical Hankel
         solver.verify_with_hankel(ez_data, src_pos, obs_pos)
         
-        return ez_data
+        return ez_data, exec_time
 
 
 sim_params = {
-    'Nx': 200, 
-    'Ny': 200, 
+    'Nx': 400, 
+    'Ny': 400, 
     'Nt': 300, 
     'lambda0': 1, 
     'CFL': 2,
     'Source_loc' : (50,100),
     'Obs_loc' : (80,100),
-    'bc': 'PBC'
+    'bc': 'PBC',
+    'solver': 'Schur'
 }
 
-results = FCI_TM_Solver.run_full_analysis(sim_params)
+results, time_schur = FCI_TM_Solver.run_full_analysis(sim_params)
+
+sim_params_2 = {
+    'Nx': 400, 
+    'Ny': 400, 
+    'Nt': 300, 
+    'lambda0': 1, 
+    'CFL': 2,
+    'Source_loc' : (50,100),
+    'Obs_loc' : (80,100),
+    'bc': 'PBC',
+    'solver': 'default'
+}
+
+results_2, time_default = FCI_TM_Solver.run_full_analysis(sim_params_2)
+
+print("\n--- Final Performance Comparison ---")
+print(f"Schur complement solver time: {time_schur:.4f} seconds")
+print(f"Default solver time:          {time_default:.4f} seconds")
