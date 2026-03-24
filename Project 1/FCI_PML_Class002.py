@@ -418,3 +418,17 @@ results_2, time_default = FCI_TM_Solver.run_full_analysis(sim_params_2)
 print("\n--- Final Performance Comparison ---")
 print(f"Schur complement solver time: {time_schur:.4f} seconds")
 print(f"Default solver time:          {time_default:.4f} seconds")
+
+sim_params_3 = {
+    'Nx': 400, 
+    'Ny': 400, 
+    'Nt': 300, 
+    'lambda0': 1, 
+    'CFL': 2,
+    'Source_loc' : (50,100),
+    'Obs_loc' : (80,100),
+    'bc': 'PEC',
+    'solver': 'Schur'
+}
+
+results_3, time_schur_3 = FCI_TM_Solver.run_full_analysis(sim_params_3)
