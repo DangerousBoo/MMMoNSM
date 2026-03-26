@@ -65,6 +65,9 @@ class SimulationConfig:
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
         
+        self.v_local = self.c / np.sqrt(self.epsilon_r)
+        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
+        
         # Grid Spacing (Non-uniform)
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
@@ -78,26 +81,12 @@ class SimulationConfig:
         # Time Stepping
         CFL = 1.0
         self.dt  = CFL / (self.c * np.sqrt((1/self.dx.min()**2) + (1/self.dy.min()**2)))
-        
-        self.free_space_sim = getattr(self, "free_space_sim", False)
         self.setup_waveguide()
-        
-        self.v_local = self.c / np.sqrt(self.epsilon_r)
-        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
         
     def _build_dx(self):
         """Constructs the non-uniform grid in the x-direction."""
         self.dx_0 = self.lam_c / self.finesse
         
-        if not getattr(self, "grid_refinement", True):
-            self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
-            self.n_d = int(np.ceil(self.d / self.dx_0))
-            self.n_wg = int(np.ceil(self.L_wg / self.dx_0))
-            self.n_Lr = int(np.ceil(self.Lr / self.dx_0))
-            nx_total = int(np.ceil(self.L / self.dx_0))
-            self.dx = np.full(nx_total, self.L / nx_total)
-            return
-            
         self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
         self.dx = np.full(self.n_Ll, self.Ll / self.n_Ll)
         
@@ -120,14 +109,6 @@ class SimulationConfig:
         """Constructs the non-uniform grid in the y-direction."""
         self.dy_0 = self.lam_c / 30
         
-        if not getattr(self, "grid_refinement", True):
-            ny_total = int(np.ceil(self.W / self.dy_0))
-            self.dy = np.full(ny_total, self.W / ny_total)
-            self.n_air = int(np.ceil(self.w_air / self.dy_0))
-            self.n_clad = int(np.ceil(self.w_clad / self.dy_0))
-            self.n_core = int(np.ceil(self.w_core / self.dy_0))
-            return
-            
         self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
         self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
         self.dy = np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))
@@ -162,18 +143,13 @@ class SimulationConfig:
         self.dy = np.concatenate((self.dy, np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))))
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
-        if self.eps_clad == self.eps_core:
-            return 0, 0
-        else:
-            n_f = int(np.ceil(np.log(d_coarse / d_fine) / np.log(alpha))) - 1
-            L_f = d_fine * (alpha**(n_f-1) - alpha) / (alpha - 1)
-            
-            return L_f, n_f
+        
+        n_f = int(np.ceil(np.log(d_coarse / d_fine) / np.log(alpha))) - 1
+        L_f = d_fine * (alpha**(n_f-1) - alpha) / (alpha - 1)
+        
+        return L_f, n_f
     
     def setup_waveguide(self):
-        if getattr(self, "free_space_sim", False):
-            return
-            
         self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air):int(-self.n_air)] = self.eps_clad
         if self.wg_type == "step":
             self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air + self.n_clad):int(- (self.n_air + self.n_clad))] = self.eps_core
@@ -395,18 +371,15 @@ class SimulationRunner:
         plt.show()
 
     @staticmethod
-    def verify_with_hankel(results):
-        print("\n--- Plotting Hankel verification ---")
-        
+    def verify_with_hankel(results, src_pos, obs_pos):
         cfg = results["config"]
-        # src is at (cfg.x0, cfg.y0), observer takes data at x1.
-        ez_obs_data = results["recorder"][:, cfg.y0]
+        ez_obs_data = results["recorder"][:, obs_pos[1]]
         
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
         
-        dx_m = nodes_x[cfg.x1] - nodes_x[cfg.x0]
-        dy_m = nodes_y[cfg.y0] - nodes_y[cfg.y0]
+        dx_m = nodes_x[obs_pos[0]] - nodes_x[src_pos[0]]
+        dy_m = nodes_y[obs_pos[1]] - nodes_y[src_pos[1]]
         r = np.sqrt(dx_m**2 + dy_m**2)
         
         if r == 0:
@@ -457,6 +430,7 @@ class SimulationRunner:
         plt.tight_layout()
         plt.show()
 
+
     @staticmethod
     def plot_grid_spacing(results):
         """Visualizes the dx and dy spacing to verify refinement."""
@@ -506,21 +480,16 @@ class SimulationRunner:
         plt.show()
 
     @classmethod
-    def run_full_analysis(cls, speed=40, do_hankel=False, **kwargs):
+    def run_full_analysis(cls, speed=40, **kwargs):
         data = cls.execute(**kwargs)
         ms_interval = int(1000 / speed)
         cls.plot_2d_animation(data, interval=ms_interval)
         cls.plot_1d_intensity(data, interval=ms_interval)
+        cls.plot_grid_spacing(data)
+        cls.plot_mesh(data)
         
         cfg = data["config"]
-        if getattr(cfg, "grid_refinement", True):
-            cls.plot_grid_spacing(data)
-            cls.plot_mesh(data)
-        
-        if do_hankel:
-            cls.verify_with_hankel(data)
-        else:
-            cls.plot_fourier_spectrum(data)
+        cls.verify_with_hankel(data, (cfg.x0, cfg.y0), (cfg.x1, cfg.y0))
         
         return data
 
@@ -530,14 +499,7 @@ class SimulationRunner:
 
 
 if __name__ == "__main__":
-    
     print("Starting simulation...")
-    
-    # Example 1: Full materials simulation, with grid refinement, checking the full Fourier spectrum:
-    # results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
-    
-    # Example 2: Free space simulation, WITHOUT grid refinement, capturing Hankel comparison properly:
-    results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="step", finesse=10, eps_core=1.11, eps_clad=1.1, free_space_sim=True, grid_refinement=True, do_hankel=True)
-
+    results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="grin", finesse=10, eps_core=1.11, eps_clad=1.1)
     print("Simulation finished.")
 
