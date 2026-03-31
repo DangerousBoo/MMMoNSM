@@ -17,12 +17,12 @@ class SimulationConfig:
         self.c          = 299792458
         self.epsilon0   = 8.854e-12
         self.mu0        = 4 * np.pi * 1e-7
-        self.gamma      = 0.0
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
         
         # Material Properties
         self.eps_clad   = 2.218**2
         self.eps_core   = 2.22**2
+        self.gamma_f    = 2.0
 
         # Source Parameters
         self.lam_c  = 1.0
@@ -44,8 +44,6 @@ class SimulationConfig:
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c # Total of time to capture the full pulse propagation through the waveguide
-        
-        # Grid refinement
         self.finesse = 30 # Dictates how many cells per central wavelength
         
         # Give possibility to change parameters via kwargs
@@ -65,6 +63,10 @@ class SimulationConfig:
         
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
+        
+        # Initialize gamma as a matrix, checking if the user set gamma_f or gamma in args
+        g_val = getattr(self, "gamma_f", getattr(self, "gamma", 0.0))
+        self.gamma      = np.full((self.nx-2, self.ny-2), float(g_val))
         
         # Grid Spacing (Non-uniform)
         self.dx_f = self.dx.min()
@@ -92,6 +94,21 @@ class SimulationConfig:
         """Constructs the non-uniform grid in the x-direction."""
         self.dx_0 = self.lam_c / self.finesse
         
+        if not getattr(self, "grid_refinement", True):
+            self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
+            self.n_d = int(np.ceil(self.d / self.dx_0))
+            self.n_wg = int(np.ceil(self.L_wg / self.dx_0))
+            self.n_Lr = int(np.ceil(self.Lr / self.dx_0))
+            nx_total = self.n_Ll + self.n_d + self.n_wg + self.n_Lr
+            # To avoid roundoff errors on total length L, we just build it segment by segment uniform
+            self.dx = np.concatenate([
+                np.full(self.n_Ll, self.Ll / self.n_Ll),
+                np.full(self.n_d, self.d / self.n_d),
+                np.full(self.n_wg, self.L_wg / self.n_wg),
+                np.full(self.n_Lr, self.Lr / self.n_Lr)
+            ])
+            return
+            
         self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
         self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
         self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
@@ -115,11 +132,16 @@ class SimulationConfig:
         self.dy_0 = self.lam_c / 30
         
         if not getattr(self, "grid_refinement", True):
-            ny_total = int(np.ceil(self.W / self.dy_0))
-            self.dy = np.full(ny_total, self.W / ny_total)
             self.n_air = int(np.ceil(self.w_air / self.dy_0))
             self.n_clad = int(np.ceil(self.w_clad / self.dy_0))
             self.n_core = int(np.ceil(self.w_core / self.dy_0))
+            self.dy = np.concatenate([
+                np.full(self.n_air, self.w_air / self.n_air),
+                np.full(self.n_clad, self.w_clad / self.n_clad),
+                np.full(self.n_core, self.w_core / self.n_core),
+                np.full(self.n_clad, self.w_clad / self.n_clad),
+                np.full(self.n_air, self.w_air / self.n_air)
+            ])
             return
             
         self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
@@ -211,7 +233,7 @@ class YeeSolver:
 
     def init_pml(self):
         p, m = 20, 4
-        eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_f, self.cfg.dy_f]))
+        eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
         ksi_k_max = 3
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
@@ -307,18 +329,13 @@ class SimulationRunner:
         Runs the simulation with optional parameter overrides.
         Example: results = SimulationRunner.execute(nt=2000, d=10)
         """
-        # 1. Create config with possible overrides
         config = SimulationConfig(**kwargs)
-        
-        # 2. Initialize Solver
         solver = YeeSolver(config)
         
-        # 3. Setup Data Storage
         history_frames = int(np.ceil(config.nt / 3))
         field_history = np.zeros((history_frames, config.nx, config.ny), dtype=np.float32)
         recorder_plane = np.zeros((config.nt, config.ny), dtype=np.float32)
         
-        # 4. Run Simulation Loop
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
             t = it * config.dt
             solver.step(t)
@@ -328,7 +345,6 @@ class SimulationRunner:
             
             recorder_plane[it, :] = solver.Ez[config.x1, :]
             
-        # Return everything needed for plotting/analysis
         return {
             "config": config,
             "history": field_history,
@@ -352,7 +368,7 @@ class SimulationRunner:
         
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
-                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
+                             shading='nearest', cmap='RdBu_r', vmin=-1e-3, vmax=1e-3)
         time_text = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
 
         def update(i):
@@ -517,8 +533,6 @@ class SimulationRunner:
         
         if do_hankel:
             cls.verify_with_hankel(data)
-        else:
-            cls.plot_fourier_spectrum(data)
         
         return data
 
@@ -532,10 +546,10 @@ if __name__ == "__main__":
     print("Starting simulation...")
     
     # Example 1: Full materials simulation, with grid refinement, checking the full Fourier spectrum:
-    # results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
+    # results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
     
     # Example 2: Free space simulation, WITHOUT grid refinement, capturing Hankel comparison properly:
-    results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=1.11, eps_clad=1.1, free_space_sim=True, grid_refinement=True, do_hankel=True)
+    results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=1.0, eps_clad=1.0, free_space_sim=True, grid_refinement=False, do_hankel=True)
 
     print("Simulation finished.")
 
