@@ -528,12 +528,11 @@ class SimulationRunner:
         
         # Plot
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(f_valid, rel_error, color='crimson', lw=1.5)
+        ax.plot(f_valid, rel_error * 100, color='crimson', lw=1.5)
         ax.set_xscale('log')
-        ax.set_yscale('log')
         ax.set_title('Relative Magnitude Error')
         ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('|H_sim - H_anal| / |H_anal|')
+        ax.set_ylabel('Relative Error (%)')
         ax.grid(True, which='both', alpha=0.3)
         plt.tight_layout()
         plt.show()
