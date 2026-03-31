@@ -63,10 +63,8 @@ class SimulationConfig:
         
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
-        
-        # Initialize gamma as a matrix, checking if the user set gamma_f or gamma in args
-        g_val = getattr(self, "gamma_f", getattr(self, "gamma", 0.0))
-        self.gamma      = np.full((self.nx-2, self.ny-2), float(g_val))
+        self.gamma      = np.zeros((self.nx-2, self.ny-2))
+
         
         # Grid Spacing (Non-uniform)
         self.dx_f = self.dx.min()
@@ -201,7 +199,7 @@ class SimulationConfig:
             eps_val = lambda y: self.eps_core + self.a_eps * (y-self.W/2)**2 + self.b_eps * (y-self.W/2)**4 
             self.epsilon_r[int(self.n_Ll + self.n_d + 1):int(self.n_Ll + self.n_d + 1 + self.n_wg), int(self.n_air + self.n_clad):int(- (self.n_air + self.n_clad))] = eps_val(self.dy_core * np.arange(self.n_air + self.n_clad, (self.n_air + self.n_clad + self.n_core) + 1))
             
-        self.sigma[int(self.n_Ll + self.n_d - 1),:int(self.n_air + self.n_clad)] = 3.5e7 #conductivity of aluminum
+        self.sigma[int(self.n_Ll + self.n_d - 1),   :int(self.n_air + self.n_clad)] = 3.5e7 #conductivity of aluminum
         self.sigma[int(self.n_Ll + self.n_d - 1), - int(self.n_air + self.n_clad):] = 3.5e7
         
 ################################################################################################################################################
@@ -324,37 +322,46 @@ class YeeSolver:
 ################################################################################################################################################
 class SimulationRunner:
     @staticmethod
-    def execute(**kwargs):
+    def execute(frame_skip=3, **kwargs):
         """
         Runs the simulation with optional parameter overrides.
-        Example: results = SimulationRunner.execute(nt=2000, d=10)
         """
         config = SimulationConfig(**kwargs)
         solver = YeeSolver(config)
         
-        history_frames = int(np.ceil(config.nt / 3))
-        field_history = np.zeros((history_frames, config.nx, config.ny), dtype=np.float32)
-        recorder_plane = np.zeros((config.nt, config.ny), dtype=np.float32)
+        n_frames = int(np.ceil(config.nt / frame_skip))
+        field_history = np.zeros((n_frames, config.nx, config.ny), dtype=np.float32)
+        recorder_plane = np.zeros((n_frames, config.ny), dtype=np.float32)
+        recorder_full = np.zeros((config.nt, config.ny), dtype=np.float32)
         
+        frame_idx = 0
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
             t = it * config.dt
             solver.step(t)
             
-            if it % 3 == 0:
-                field_history[it // 3] = solver.Ez
+            recorder_full[it, :] = solver.Ez[config.x1, :]
             
-            recorder_plane[it, :] = solver.Ez[config.x1, :]
+            if it % frame_skip == 0 and frame_idx < n_frames:
+                field_history[frame_idx] = solver.Ez
+                recorder_plane[frame_idx, :] = solver.Ez[config.x1, :]
+                frame_idx += 1
             
         return {
             "config": config,
             "history": field_history,
             "recorder": recorder_plane,
+            "recorder_full": recorder_full,
+            "frame_skip": frame_skip,
             "times": np.arange(config.nt) * config.dt
         }
 
     @staticmethod
-    def plot_2d_animation(results, interval=100):
-        """Triggers the 2D Field Animation."""
+    def plot_2d_animation(results, fps=40):
+        """Triggers the 2D Field Animation.
+        
+        Args:
+            fps: Frames per second. Higher = faster animation.
+        """
         cfg = results["config"]
         hist = results["history"]
         
@@ -368,21 +375,29 @@ class SimulationRunner:
         
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
-                             shading='nearest', cmap='RdBu_r', vmin=-1e-3, vmax=1e-3)
-        time_text = ax.text(0.5, 1.02, '', transform=ax.transAxes, color='white', ha='center')
+                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
+        time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
 
+        fs = results["frame_skip"]
         def update(i):
             frame_data = (hist[i] * cfg.Z_local).T
             quad.set_array(frame_data.ravel())
-            time_text.set_text(f'Step {i*5}/{cfg.nt} | {i*5*cfg.dt*1e9:.2f} ns')
+            time_text.set_text(f'Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
             return quad, time_text
 
-        ani = FuncAnimation(fig, update, frames=len(hist), interval=interval, blit=True)
+        interval_ms = max(1, int(1000 / fps))
+        print(f'[2D] fps={fps}, interval={interval_ms}ms, total_frames={len(hist)}')
+        ani = FuncAnimation(fig, update, frames=len(hist), interval=interval_ms, blit=True)
+        results["ani_2d"] = ani
         plt.show()
 
     @staticmethod
-    def plot_1d_intensity(results, interval=50):
-        """Triggers the 1D Intensity Animation at the recorder plane."""
+    def plot_1d_intensity(results, fps=40):
+        """Triggers the 1D Intensity Animation at the recorder plane.
+        
+        Args:
+            fps: Frames per second. Higher = faster animation.
+        """
         cfg = results["config"]
         rec = results["recorder"]
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
@@ -398,14 +413,19 @@ class SimulationRunner:
         ax.axvspan(nodes_y[int(cfg.n_air)             ], nodes_y[int(cfg.n_air + cfg.n_clad)], color='yellow', alpha=0.1)
         ax.axvspan(nodes_y[int(cfg.n_air + cfg.n_clad)], nodes_y[int(cfg.n_air + cfg.n_clad + cfg.n_core)], color='blue'  , alpha=0.1)
         ax.axvspan(nodes_y[int(cfg.n_air + cfg.n_clad + cfg.n_core)], nodes_y[int(cfg.n_air + 2 * cfg.n_clad + cfg.n_core)], color='yellow', alpha=0.1)
-        time_text = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontweight='bold')
+        time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
 
+        fs = results["frame_skip"]
+        n_frames = len(rec)
         def update(i):
             line.set_data(nodes_y, rec[i, :]**2)
-            time_text.set_text(f'Intensity | t = {i * cfg.dt * 1e9:.3f} ns')
+            time_text.set_text(f'Intensity | Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
             return line, time_text
 
-        ani = FuncAnimation(fig, update, frames=range(3 * cfg.nt // 4, cfg.nt, 2), interval = interval, blit=True)
+        interval_ms = max(1, int(1000 / fps))
+        print(f'[1D] fps={fps}, interval={interval_ms}ms, total_frames={n_frames}')
+        ani = FuncAnimation(fig, update, frames=n_frames, interval=interval_ms, blit=True)
+        results["ani_1d"] = ani
         plt.show()
 
     @staticmethod
@@ -413,8 +433,7 @@ class SimulationRunner:
         print("\n--- Plotting Hankel verification ---")
         
         cfg = results["config"]
-        # src is at (cfg.x0, cfg.y0), observer takes data at x1.
-        ez_obs_data = results["recorder"][:, cfg.y0]
+        ez_obs_data = results["recorder_full"][:, cfg.y0]
         
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
@@ -429,7 +448,9 @@ class SimulationRunner:
         # Setup time and frequency 
         t = np.arange(cfg.nt) * cfg.dt
         freqs = fftfreq(cfg.nt, cfg.dt)
-        band_idx = np.where((freqs > cfg.f_c * 0.2) & (freqs < cfg.f_c * 1.8))[0]
+        f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0.2)
+        f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 1.8)
+        band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
         f_valid = freqs[band_idx]
         omega = 2 * np.pi * f_valid
         k0 = omega / cfg.c
@@ -445,29 +466,75 @@ class SimulationRunner:
 
         # Analytical Solution
         H_analytical = -(omega * cfg.mu0 / 4) * sp_special.hankel2(0, k0 * r)
-        
 
-        # Plotting
-        plt.figure(figsize=(12, 5))
-        # Magnitude Plot
-        plt.subplot(1, 2, 1)
-        plt.plot(f_valid, np.abs(H_sim_corrected) / np.max(np.abs(H_sim_corrected)), label='Simulation', lw=2)
-        plt.plot(f_valid, np.abs(H_analytical) / np.max(np.abs(H_analytical)), '--', label='Analytical', lw=2)
-        plt.title('Magnitude Response')
-        plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Normalized Magnitude')
-        plt.legend()
-        plt.grid(True)
+        # Store for error analysis
+        results["_hankel_data"] = {
+            "f_valid": f_valid, "omega": omega, "k0": k0, "r": r,
+            "H_sim": H_sim_corrected, "H_analytical": H_analytical,
+            "J_src_valid": J_src_valid
+        }
+
+        # Plotting — Magnitude and Phase only
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         
-        # Phase Plot
-        plt.subplot(1, 2, 2)
-        plt.plot(f_valid,  np.unwrap(np.angle(H_sim_corrected)), label='Simulation Phase', lw=2)
-        plt.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical Phase', lw=2)
-        plt.title('Phase Response')
-        plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Phase (rad)')
-        plt.legend()
-        plt.grid(True)
+        ax = axes[0]
+        ax.plot(f_valid, np.abs(H_sim_corrected) / np.max(np.abs(H_sim_corrected)), label='Simulation', lw=2)
+        ax.plot(f_valid, np.abs(H_analytical) / np.max(np.abs(H_analytical)), '--', label='Analytical', lw=2)
+        ax.set_xscale('log')
+        ax.axvline(cfg.f_c * 2, color='red', ls=':', alpha=0.5, label=f'2*f_c ({cfg.f_c*2:.2e} Hz)') 
+        ax.set_title('Magnitude Response')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Normalized Magnitude')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
+        ax = axes[1]
+        ax.plot(f_valid, np.unwrap(np.angle(H_sim_corrected)), label='Simulation', lw=2)
+        ax.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical', lw=2)
+        ax.set_xscale('log')
+        ax.set_title('Phase Response')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Phase (rad)')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def plot_error_analysis(results):
+        if "_hankel_data" not in results:
+            print("Run verify_with_hankel first!")
+            return
+            
+        hd = results["_hankel_data"]
+        cfg = results["config"]
+        f_valid = hd["f_valid"]
+        H_sim, H_anal = hd["H_sim"], hd["H_analytical"]
+        
+        # Normalize both at f_c to remove constant amplitude offset from source injection
+        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+        sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
+        anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
+        rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+        
+        # Print key frequency limits
+        f_src_max = cfg.f_c * (1 + 1)  # Source bandwidth edge: f_c + a*sigma_f = 2*f_c
+        f_nyquist = cfg.c / (2 * cfg.dx_f)
+        f_cutoff = (1 / (np.pi * cfg.dt)) * np.arcsin(cfg.c * cfg.dt / cfg.dx_f)
+        print(f"  Source bandwidth:    ~[0, {f_src_max:.3e}] Hz  (2 * f_c)")
+        print(f"  Spatial Nyquist:     {f_nyquist:.3e} Hz  ({f_nyquist/cfg.f_c:.1f} * f_c)")
+        print(f"  Yee num. cutoff:     {f_cutoff:.3e} Hz  ({f_cutoff/cfg.f_c:.1f} * f_c)")
+        
+        # Plot
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(f_valid, rel_error, color='crimson', lw=1.5)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_title('Relative Magnitude Error')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('|H_sim - H_anal| / |H_anal|')
+        ax.grid(True, which='both', alpha=0.3)
         plt.tight_layout()
         plt.show()
 
@@ -520,11 +587,10 @@ class SimulationRunner:
         plt.show()
 
     @classmethod
-    def run_full_analysis(cls, speed=40, do_hankel=False, **kwargs):
-        data = cls.execute(**kwargs)
-        ms_interval = int(1000 / speed)
-        cls.plot_2d_animation(data, interval=ms_interval)
-        cls.plot_1d_intensity(data, interval=ms_interval)
+    def run_full_analysis(cls, fps=60, frame_skip=3, do_hankel=False, **kwargs):
+        data = cls.execute(frame_skip=frame_skip, **kwargs)
+        cls.plot_2d_animation(data, fps=fps)
+        cls.plot_1d_intensity(data, fps=fps)
         
         cfg = data["config"]
         if getattr(cfg, "grid_refinement", True):
@@ -533,6 +599,7 @@ class SimulationRunner:
         
         if do_hankel:
             cls.verify_with_hankel(data)
+            cls.plot_error_analysis(data)
         
         return data
 
@@ -545,11 +612,15 @@ if __name__ == "__main__":
     
     print("Starting simulation...")
     
-    # Example 1: Full materials simulation, with grid refinement, checking the full Fourier spectrum:
-    # results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
+    # Example 1: Full materials simulation, with grid refinement:
+    # results = SimulationRunner.run_full_analysis(wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
     
-    # Example 2: Free space simulation, WITHOUT grid refinement, capturing Hankel comparison properly:
-    results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=1.0, eps_clad=1.0, free_space_sim=True, grid_refinement=False, do_hankel=True)
+    # Free space sim to verify with Hankel
+    results = SimulationRunner.run_full_analysis(
+        frame_skip=5, 
+        wg_type="step", finesse=30, 
+        free_space_sim=True, grid_refinement=False, 
+        do_hankel=True, hankel_f_min=0, hankel_f_max=3*299792458
+    )
 
     print("Simulation finished.")
-
