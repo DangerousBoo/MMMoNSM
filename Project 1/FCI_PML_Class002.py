@@ -297,50 +297,36 @@ class FCI_TM_Solver:
         plt.show()
 
     def verify_with_hankel(self, ez_obs_data, src_pos, obs_pos):
-        # 1. Calculate physical distance (r) between source and observer
         dx_m = (obs_pos[0] - src_pos[0]) * self.dx
         dy_m = (obs_pos[1] - src_pos[1]) * self.dy
         r = np.sqrt(dx_m**2 + dy_m**2)
         
         if r == 0:
-            raise ValueError("Observation position must differ from source position (r cannot be 0).")
+            raise ValueError("r must be greater than zero")
 
-        # 2. Setup Time and Frequency arrays
+        # Setup time and frequency 
         t = np.arange(self.Nt) * self.dt
         freqs = fftfreq(self.Nt, self.dt)
-        
-        # 3. FFT of simulation data and the source function
-        src_time = self.my_src(t)
-        Ez_sim_f = fft(ez_obs_data) * self.dt
-        J_src_f = fft(src_time) * self.dt
-        
-        # Avoid division by zero by isolating the active frequency band
         band_idx = np.where((freqs > self.f_c * 0.2) & (freqs < self.f_c * 1.8))[0]
         f_valid = freqs[band_idx]
-        
-        Ez_sim_valid = Ez_sim_f[band_idx]
-        J_src_valid = J_src_f[band_idx]
-        
-        # Normalize simulated field by the source spectrum (Cancels the t0 delay)
-        H_sim = Ez_sim_valid / J_src_valid
-        
-        # Analytical Solution
         omega = 2 * np.pi * f_valid
         k0 = omega / self.c
+        
+        # FFT of simulation data and the source function
+        src_time = self.my_src(t)
+        Ez_sim_f = fft(ez_obs_data) * self.dt
+        Ez_sim_valid = Ez_sim_f[band_idx]
+        J_src_f = fft(src_time) * self.dt
+        J_src_valid = J_src_f[band_idx]
+        H_sim = Ez_sim_valid / J_src_valid
+        H_sim_corrected = H_sim * np.exp(1j * omega * self.dt)
+
+        # Analytical Solution
         H_analytical = -(omega * self.mu / 4) * sp_special.hankel2(0, k0 * r)
         
-        # --- THE FIXES ---
-        # A) Correct for the 1-step FDTD recording delay
-        H_sim_corrected = H_sim * np.exp(1j * omega * self.dt)
-        
-        # B) Unwrap the radians first, then properly convert to degrees
-        sim_phase_deg = np.rad2deg(np.unwrap(np.angle(H_sim_corrected)))
-        ana_phase_deg = np.rad2deg(np.unwrap(np.angle(H_analytical)))
-        # -----------------
-        
+
         # Plotting
         plt.figure(figsize=(12, 5))
-        
         # Magnitude Plot
         plt.subplot(1, 2, 1)
         plt.plot(f_valid, np.abs(H_sim_corrected) / np.max(np.abs(H_sim_corrected)), label='Simulation', lw=2)
@@ -353,14 +339,13 @@ class FCI_TM_Solver:
         
         # Phase Plot
         plt.subplot(1, 2, 2)
-        plt.plot(f_valid, sim_phase_deg, label='Simulation Phase', lw=2)
-        plt.plot(f_valid, ana_phase_deg, '--', label='Analytical Phase', lw=2)
+        plt.plot(f_valid,  np.unwrap(np.angle(H_sim_corrected)), label='Simulation Phase', lw=2)
+        plt.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical Phase', lw=2)
         plt.title('Phase Response')
         plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Phase (°)')
+        plt.ylabel('Phase (rad)')
         plt.legend()
         plt.grid(True)
-        
         plt.tight_layout()
         plt.show()
 
@@ -380,7 +365,6 @@ class FCI_TM_Solver:
         
         # Plot 1D intensity at observer
         solver.plot_1d_intensity(solver.dt, ez_data)
-        
         # Verify against analytical Hankel
         solver.verify_with_hankel(ez_data, src_pos, obs_pos)
         
