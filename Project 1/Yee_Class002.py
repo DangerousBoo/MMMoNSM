@@ -43,6 +43,7 @@ class SimulationConfig:
         self.Lr     = 1 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
+        self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c # Total of time to capture the full pulse propagation through the waveguide
         
         # Grid refinement
         self.finesse = 30 # Dictates how many cells per central wavelength
@@ -78,6 +79,8 @@ class SimulationConfig:
         # Time Stepping
         CFL = 1.0
         self.dt  = CFL / (self.c * np.sqrt((1/self.dx.min()**2) + (1/self.dy.min()**2)))
+        self.nt = int(np.ceil(self.T / self.dt))
+        
         
         self.free_space_sim = getattr(self, "free_space_sim", False)
         self.setup_waveguide()
@@ -537,7 +540,7 @@ if __name__ == "__main__":
     # results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
     
     # Example 2: Free space simulation, WITHOUT grid refinement, capturing Hankel comparison properly:
-    results = SimulationRunner.run_full_analysis(speed=2000, nt=1500, wg_type="step", finesse=10, eps_core=1.11, eps_clad=1.1, free_space_sim=True, grid_refinement=True, do_hankel=True)
+    results = SimulationRunner.run_full_analysis(speed=2000, wg_type="step", finesse=10, eps_core=1.11, eps_clad=1.1, free_space_sim=True, grid_refinement=True, do_hankel=True)
 
     print("Simulation finished.")
 
