@@ -92,32 +92,23 @@ class SimulationConfig:
         """Constructs the non-uniform grid in the x-direction."""
         self.dx_0 = self.lam_c / self.finesse
         
-        if not getattr(self, "grid_refinement", True):
-            self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
-            self.n_d = int(np.ceil(self.d / self.dx_0))
-            self.n_wg = int(np.ceil(self.L_wg / self.dx_0))
-            self.n_Lr = int(np.ceil(self.Lr / self.dx_0))
-            nx_total = int(np.ceil(self.L / self.dx_0))
-            self.dx = np.full(nx_total, self.L / nx_total)
-            return
-            
         self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
-        self.dx = np.full(self.n_Ll, self.Ll / self.n_Ll)
-        
         self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
         self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
-        self.dx = np.concatenate((self.dx, np.full(int(self.n_d - self.n_f_dt), self.d / (self.n_d - self.n_f_dt))))
-        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m))
-        
         self.L_f_twg, self.n_f_twg = self.L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
-        self.n_wg = np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg
-        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m))
-        self.dx = np.concatenate((self.dx, np.full(int(self.n_wg - self.n_f_twg), self.L_wg / self.n_wg)))
-        
+        self.n_wg = int(np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg)
         self.L_f_wg_Lr, self.n_f_wg_Lr = self.L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
         self.n_Lr = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
-        self.dx = np.concatenate((self.dx, self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core)))
-        self.dx = np.concatenate((self.dx, np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))))
+        
+        self.dx = np.concatenate([
+            np.full(self.n_Ll, self.Ll / self.n_Ll),
+            np.full(int(self.n_d - self.n_f_dt), self.d / (self.n_d - self.n_f_dt)),
+            self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m,
+            self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m,
+            np.full(int(self.n_wg - self.n_f_twg), self.L_wg / self.n_wg),
+            self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core),
+            np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))
+        ])
 
     def _build_dy(self):
         """Constructs the non-uniform grid in the y-direction."""
@@ -133,36 +124,40 @@ class SimulationConfig:
             
         self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
         self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
-        self.dy = np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))
-        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad)))
         
         if self.wg_type == "step":
             self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
-            self.dy = np.concatenate((self.dy, np.full(self.n_clad, self.w_clad / self.n_clad)))
-            
             self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
-            self.dy = np.concatenate((self.dy, np.full(self.n_core, self.w_core / self.n_core)))
-            
-            self.dy = np.concatenate((self.dy, np.full(self.n_clad, self.w_clad / self.n_clad)))
+            dy_mid = [
+                np.full(self.n_clad, self.w_clad / self.n_clad),
+                np.full(self.n_core, self.w_core / self.n_core),
+                np.full(self.n_clad, self.w_clad / self.n_clad)
+            ]
         else:
             self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
             self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
             self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
-            self.dy_core = np.array([np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core)]).min()
+            self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core))
             
             self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
             self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
-            self.dy = np.concatenate((self.dy, np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))
-            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core))
-            
             self.n_core = int(np.ceil(self.w_core / self.dy_core))
-            self.dy = np.concatenate((self.dy, np.full(self.n_core, self.w_core / self.n_core)))
             
-            self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core))
-            self.dy = np.concatenate((self.dy, np.full(int(self.n_clad - self.n_f_cc), (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))))       
+            dy_mid = [
+                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc)),
+                self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core,
+                np.full(self.n_core, self.w_core / self.n_core),
+                self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core,
+                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))
+            ]
             
-        self.dy = np.concatenate((self.dy, self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad)))
-        self.dy = np.concatenate((self.dy, np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))))
+        self.dy = np.concatenate([
+            np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac)),
+            self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
+            *dy_mid,
+            self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
+            np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))
+        ])
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
         if self.eps_clad == self.eps_core:
