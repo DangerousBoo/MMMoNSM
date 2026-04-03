@@ -28,24 +28,27 @@ class SimulationConfig:
         self.lam_c  = 1.0
         self.f_c    = self.c / self.lam_c
         self.A      = 1.0
-        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
+        self.a      = 2 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
+        self.f_break = 2 * self.f_c
         
         # Dimensions expressed in amount of wavelengths
-        self.L_wg   = 10 * self.lam_c # Length of the waveguide in meters
-        self.w_core = 3 * self.lam_c # Width of the core in meters
-        self.w_clad = 3 * self.lam_c # Width of the cladding on each side in meters
-        self.w_air  = 1 * self.lam_c # Width of the air region on each side next to the cladding in meters
-        self.d      = 4 * self.lam_c # Distance between source and the barrier in meters
-        self.t_m    = 0.01 * self.lam_c # Thickness of the barrier infront of the waveguide
-        self.Ll     = 3 * self.lam_c # Length of the left region before the source in meters
-        self.Lr     = 1 * self.lam_c # Length of the right region after the waveguide in meters
+        f = 1
+        self.L_wg   = f * 10 * self.lam_c # Length of the waveguide in meters
+        self.w_core = f * 3 * self.lam_c # Width of the core in meters
+        self.w_clad = f * 3 * self.lam_c # Width of the cladding on each side in meters
+        self.w_air  = f * 1 * self.lam_c # Width of the air region on each side next to the cladding in meters
+        self.d      = f * 4 * self.lam_c # Distance between source and the barrier in meters
+        self.t_m    = f * 0.01 * self.lam_c # Thickness of the barrier infront of the waveguide
+        self.Ll     = f * 2*3 * self.lam_c # Length of the left region before the source in meters
+        self.Lr     = f * 1 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
-        self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core # Total width of the simulation domain in y direction in meters
+        self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core) # Total width of the simulation domain in y direction in meters
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c # Total of time to capture the full pulse propagation through the waveguide
         self.finesse = 30 # Dictates how many cells per central wavelength
-        
+        self.f_min  = self.c / self.W
+
         # Give possibility to change parameters via kwargs
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -70,8 +73,18 @@ class SimulationConfig:
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
         
-        self.x0, self.y0 = self.n_Ll, self.ny // 2 # Source location
-        self.x1 = self.nx - 50 # Recorder location
+        self.x0 = getattr(self, "x0", self.n_Ll)
+        self.y0 = getattr(self, "y0", self.ny // 2)
+        
+        if "x1" in kwargs:
+            self.x1 = self.x0 + kwargs["x1"]
+        else:
+            self.x1 = self.nx - 50
+            
+        if "y1" in kwargs:
+            self.y1 = self.y0 + kwargs["y1"]
+        else:
+            self.y1 = self.y0
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
@@ -127,7 +140,7 @@ class SimulationConfig:
 
     def _build_dy(self):
         """Constructs the non-uniform grid in the y-direction."""
-        self.dy_0 = self.lam_c / 30
+        self.dy_0 = self.lam_c / self.finesse
         
         if not getattr(self, "grid_refinement", True):
             self.n_air = int(np.ceil(self.w_air / self.dy_0))
@@ -230,9 +243,9 @@ class YeeSolver:
         self.Ez_dot_old = np.zeros_like(self.Ez_dot)
 
     def init_pml(self):
-        p, m = 20, 4
+        p, m = 25, 4
         eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
-        ksi_k_max = 3
+        ksi_k_max = 2
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
         self.etax, self.etay = np.zeros((self.cfg.nx, self.cfg.ny)), np.zeros((self.cfg.nx, self.cfg.ny))
@@ -358,9 +371,6 @@ class SimulationRunner:
     @staticmethod
     def plot_2d_animation(results, fps=40):
         """Triggers the 2D Field Animation.
-        
-        Args:
-            fps: Frames per second. Higher = faster animation.
         """
         cfg = results["config"]
         hist = results["history"]
@@ -375,7 +385,12 @@ class SimulationRunner:
         
         # Initial plot:
         quad = ax.pcolormesh(X, Y, (hist[0] * cfg.Z_local).T, 
-                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4)
+                             shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4, zorder=1)
+                             
+        # Plot source and recorders on top
+        scat1 = ax.scatter(nodes_x[cfg.x0], nodes_y[cfg.y0], color='red', s=20, zorder=2, label='Source')
+        scat2 = ax.scatter(nodes_x[cfg.x1], nodes_y[cfg.y1], color='green', s=20, zorder=2, label='Recorder')
+        ax.legend(loc='upper right', fontsize=8)
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
 
         fs = results["frame_skip"]
@@ -383,7 +398,7 @@ class SimulationRunner:
             frame_data = (hist[i] * cfg.Z_local).T
             quad.set_array(frame_data.ravel())
             time_text.set_text(f'Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
-            return quad, time_text
+            return quad, time_text, scat1, scat2
 
         interval_ms = max(1, int(1000 / fps))
         print(f'[2D] fps={fps}, interval={interval_ms}ms, total_frames={len(hist)}')
@@ -394,9 +409,6 @@ class SimulationRunner:
     @staticmethod
     def plot_1d_intensity(results, fps=40):
         """Triggers the 1D Intensity Animation at the recorder plane.
-        
-        Args:
-            fps: Frames per second. Higher = faster animation.
         """
         cfg = results["config"]
         rec = results["recorder"]
@@ -433,13 +445,13 @@ class SimulationRunner:
         print("\n--- Plotting Hankel verification ---")
         
         cfg = results["config"]
-        ez_obs_data = results["recorder_full"][:, cfg.y0]
+        ez_obs_data = results["recorder_full"][:, cfg.y1]
         
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
         
         dx_m = nodes_x[cfg.x1] - nodes_x[cfg.x0]
-        dy_m = nodes_y[cfg.y0] - nodes_y[cfg.y0]
+        dy_m = nodes_y[cfg.y1] - nodes_y[cfg.y0]
         r = np.sqrt(dx_m**2 + dy_m**2)
         
         if r == 0:
@@ -447,7 +459,8 @@ class SimulationRunner:
 
         # Setup time and frequency 
         t = np.arange(cfg.nt) * cfg.dt
-        freqs = fftfreq(cfg.nt, cfg.dt)
+        n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))  # High resolution zero padding
+        freqs = fftfreq(n_pad, cfg.dt)
         f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0.2)
         f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 1.8)
         band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
@@ -455,11 +468,11 @@ class SimulationRunner:
         omega = 2 * np.pi * f_valid
         k0 = omega / cfg.c
         
-        # FFT of simulation data and the source function
+        # FFT of simulation data and the source function (with zero padding)
         src_time = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
-        Ez_sim_f = fft(ez_obs_data) * cfg.dt
+        Ez_sim_f = fft(ez_obs_data, n=n_pad) * cfg.dt
         Ez_sim_valid = Ez_sim_f[band_idx]
-        J_src_f = fft(src_time) * cfg.dt
+        J_src_f = fft(src_time, n=n_pad) * cfg.dt
         J_src_valid = J_src_f[band_idx]
         H_sim = Ez_sim_valid / J_src_valid
         H_sim_corrected = H_sim * np.exp(1j * omega * cfg.dt)
@@ -477,11 +490,20 @@ class SimulationRunner:
         # Plotting — Magnitude and Phase only
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         
+        # Normalize at f_c (best SNR) instead of max() which is noise-sensitive
+        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+        
         ax = axes[0]
-        ax.plot(f_valid, np.abs(H_sim_corrected) / np.max(np.abs(H_sim_corrected)), label='Simulation', lw=2)
-        ax.plot(f_valid, np.abs(H_analytical) / np.max(np.abs(H_analytical)), '--', label='Analytical', lw=2)
+        ax.plot(f_valid, np.abs(H_sim_corrected) / np.abs(H_sim_corrected[idx_fc]), label='Simulation', lw=2)
+        ax.plot(f_valid, np.abs(H_analytical) / np.abs(H_analytical[idx_fc]), '--', label='Analytical', lw=2)
+        ax.plot(f_valid, np.abs(J_src_valid) / np.abs(J_src_valid[idx_fc]), label='Source', lw=2, color='lightgray', alpha=1.0)
         ax.set_xscale('log')
-        ax.axvline(cfg.f_c * 2, color='red', ls=':', alpha=0.5, label=f'2*f_c ({cfg.f_c*2:.2e} Hz)') 
+        
+        # Calculate limit securely using a boolean mask
+        max_val = np.max(np.abs(H_sim_corrected[f_valid < cfg.f_break]) / np.abs(H_sim_corrected[idx_fc]))
+        ax.set_ylim(0, 1.3 * max_val)
+        ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)') 
+        ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
         ax.set_title('Magnitude Response')
         ax.set_xlabel('Frequency (Hz)')
         ax.set_ylabel('Normalized Magnitude')
@@ -526,13 +548,41 @@ class SimulationRunner:
         print(f"  Spatial Nyquist:     {f_nyquist:.3e} Hz  ({f_nyquist/cfg.f_c:.1f} * f_c)")
         print(f"  Yee num. cutoff:     {f_cutoff:.3e} Hz  ({f_cutoff/cfg.f_c:.1f} * f_c)")
         
+        # Phase Error Dispersion
+        sim_phase = np.unwrap(np.angle(H_sim))
+        anal_phase = np.unwrap(np.angle(H_anal))
+        # Compute difference and pin it to 0 at the central frequency
+        phase_diff = sim_phase - anal_phase
+        phase_diff -= phase_diff[idx_fc]
+        phase_error_deg = np.rad2deg(phase_diff)
+        
         # Plot
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Magnitude Error
+        ax = axes[0]
         ax.plot(f_valid, rel_error * 100, color='crimson', lw=1.5)
+        ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)')
+        ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({cfg.f_c:.2e} Hz)')
+        ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
         ax.set_xscale('log')
         ax.set_title('Relative Magnitude Error')
         ax.set_xlabel('Frequency (Hz)')
         ax.set_ylabel('Relative Error (%)')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
+        # Phase Error
+        ax = axes[1]
+        ax.plot(f_valid, phase_error_deg, color='purple', lw=1.5)
+        ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)')
+        ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({cfg.f_c:.2e} Hz)')
+        ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
+        ax.set_xscale('log')
+        ax.set_title('Phase Error Dispersion')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Phase Error (Degrees)')
+        ax.legend()
         ax.grid(True, which='both', alpha=0.3)
         plt.tight_layout()
         plt.show()
@@ -617,9 +667,10 @@ if __name__ == "__main__":
     # Free space sim to verify with Hankel
     results = SimulationRunner.run_full_analysis(
         frame_skip=5, 
-        wg_type="step", finesse=30, 
+        wg_type="step", finesse= 20, 
         free_space_sim=True, grid_refinement=False, 
-        do_hankel=True, hankel_f_min=0, hankel_f_max=3*299792458
+        do_hankel=True, hankel_f_min=0, hankel_f_max=3*299792458,
+        x1 = 50, y1 = 50
     )
 
     print("Simulation finished.")
