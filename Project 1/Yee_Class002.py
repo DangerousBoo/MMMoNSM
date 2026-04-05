@@ -28,20 +28,20 @@ class SimulationConfig:
         self.lam_c  = 1.0
         self.f_c    = self.c / self.lam_c
         self.A      = 1.0
-        self.a      = 2 # Amount of sigmas between fc and 0 in frequency domain
+        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
         self.f_break = 2 * self.f_c
         
         # Dimensions expressed in amount of wavelengths
-        f = 1
+        f = 1.5
         self.L_wg   = f * 10 * self.lam_c # Length of the waveguide in meters
         self.w_core = f * 3 * self.lam_c # Width of the core in meters
         self.w_clad = f * 3 * self.lam_c # Width of the cladding on each side in meters
         self.w_air  = f * 1 * self.lam_c # Width of the air region on each side next to the cladding in meters
         self.d      = f * 4 * self.lam_c # Distance between source and the barrier in meters
-        self.t_m    = f * 0.01 * self.lam_c # Thickness of the barrier infront of the waveguide
-        self.Ll     = f * 2*3 * self.lam_c # Length of the left region before the source in meters
+        self.t_m    = f * 0.03 * self.lam_c # Thickness of the barrier infront of the waveguide
+        self.Ll     = f * 5 * self.lam_c # Length of the left region before the source in meters
         self.Lr     = f * 1 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core) # Total width of the simulation domain in y direction in meters
@@ -68,7 +68,6 @@ class SimulationConfig:
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
         self.gamma      = np.zeros((self.nx-2, self.ny-2))
 
-        
         # Grid Spacing (Non-uniform)
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
@@ -85,6 +84,19 @@ class SimulationConfig:
             self.y1 = self.y0 + kwargs["y1"]
         else:
             self.y1 = self.y0
+
+        # Observation points with standard values
+        # Diagonal from the source
+        self.x_diag = getattr(self, "x_diag", self.x0 + 20)
+        self.y_diag = getattr(self, "y_diag", self.y0 + 20)
+
+        # Horizontal after the waveguide
+        self.x_after = getattr(self, "x_after", self.nx - 50)
+        self.y_after = getattr(self, "y_after", self.y0)
+
+        # Horizontal before the waveguide (and wall)
+        self.x_before = getattr(self, "x_before", self.x0 + int(self.n_d // 2))
+        self.y_before = getattr(self, "y_before", self.y0)
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
@@ -243,9 +255,9 @@ class YeeSolver:
         self.Ez_dot_old = np.zeros_like(self.Ez_dot)
 
     def init_pml(self):
-        p, m = 25, 4
+        p, m = int(2.5 * self.cfg.finesse), 4
         eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
-        ksi_k_max = 2
+        ksi_k_max = 2.0 
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
         self.etax, self.etay = np.zeros((self.cfg.nx, self.cfg.ny)), np.zeros((self.cfg.nx, self.cfg.ny))
@@ -347,12 +359,20 @@ class SimulationRunner:
         recorder_plane = np.zeros((n_frames, config.ny), dtype=np.float32)
         recorder_full = np.zeros((config.nt, config.ny), dtype=np.float32)
         
+        # New point recorders
+        rec_diag = np.zeros(config.nt, dtype=np.float32)
+        rec_after = np.zeros(config.nt, dtype=np.float32)
+        rec_before = np.zeros(config.nt, dtype=np.float32)
+        
         frame_idx = 0
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt})"):
             t = it * config.dt
             solver.step(t)
             
             recorder_full[it, :] = solver.Ez[config.x1, :]
+            rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
+            rec_after[it] = solver.Ez[config.x_after, config.y_after]
+            rec_before[it] = solver.Ez[config.x_before, config.y_before]
             
             if it % frame_skip == 0 and frame_idx < n_frames:
                 field_history[frame_idx] = solver.Ez
@@ -364,6 +384,9 @@ class SimulationRunner:
             "history": field_history,
             "recorder": recorder_plane,
             "recorder_full": recorder_full,
+            "rec_diag": rec_diag,
+            "rec_after": rec_after,
+            "rec_before": rec_before,
             "frame_skip": frame_skip,
             "times": np.arange(config.nt) * config.dt
         }
@@ -390,6 +413,12 @@ class SimulationRunner:
         # Plot source and recorders on top
         scat1 = ax.scatter(nodes_x[cfg.x0], nodes_y[cfg.y0], color='red', s=20, zorder=2, label='Source')
         scat2 = ax.scatter(nodes_x[cfg.x1], nodes_y[cfg.y1], color='green', s=20, zorder=2, label='Recorder')
+        
+        # New observation points
+        scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
+        scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
+        scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
+        
         ax.legend(loc='upper right', fontsize=8)
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
 
@@ -398,7 +427,7 @@ class SimulationRunner:
             frame_data = (hist[i] * cfg.Z_local).T
             quad.set_array(frame_data.ravel())
             time_text.set_text(f'Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
-            return quad, time_text, scat1, scat2
+            return quad, time_text, scat1, scat2, scat3, scat4, scat5
 
         interval_ms = max(1, int(1000 / fps))
         print(f'[2D] fps={fps}, interval={interval_ms}ms, total_frames={len(hist)}')
@@ -445,18 +474,10 @@ class SimulationRunner:
         print("\n--- Plotting Hankel verification ---")
         
         cfg = results["config"]
-        ez_obs_data = results["recorder_full"][:, cfg.y1]
         
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
         
-        dx_m = nodes_x[cfg.x1] - nodes_x[cfg.x0]
-        dy_m = nodes_y[cfg.y1] - nodes_y[cfg.y0]
-        r = np.sqrt(dx_m**2 + dy_m**2)
-        
-        if r == 0:
-            raise ValueError("r must be greater than zero")
-
         # Setup time and frequency 
         t = np.arange(cfg.nt) * cfg.dt
         n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))  # High resolution zero padding
@@ -468,57 +489,77 @@ class SimulationRunner:
         omega = 2 * np.pi * f_valid
         k0 = omega / cfg.c
         
-        # FFT of simulation data and the source function (with zero padding)
+        # FFT of source function (with zero padding)
         src_time = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
-        Ez_sim_f = fft(ez_obs_data, n=n_pad) * cfg.dt
-        Ez_sim_valid = Ez_sim_f[band_idx]
         J_src_f = fft(src_time, n=n_pad) * cfg.dt
         J_src_valid = J_src_f[band_idx]
-        H_sim = Ez_sim_valid / J_src_valid
-        H_sim_corrected = H_sim * np.exp(1j * omega * cfg.dt)
 
-        # Analytical Solution
-        H_analytical = -(omega * cfg.mu0 / 4) * sp_special.hankel2(0, k0 * r)
-
-        # Store for error analysis
         results["_hankel_data"] = {
-            "f_valid": f_valid, "omega": omega, "k0": k0, "r": r,
-            "H_sim": H_sim_corrected, "H_analytical": H_analytical,
-            "J_src_valid": J_src_valid
+            "f_valid": f_valid, "omega": omega, "k0": k0, "J_src_valid": J_src_valid,
+            "obs_points": {}
         }
+        
+        def process_point(name, ez_data, x_idx, y_idx):
+            dx_m = nodes_x[x_idx] - nodes_x[cfg.x0]
+            dy_m = nodes_y[y_idx] - nodes_y[cfg.y0]
+            r = np.sqrt(dx_m**2 + dy_m**2)
+            if r == 0:
+                print(f"Skipping {name}: r=0")
+                return
+            
+            Ez_sim_f = fft(ez_data, n=n_pad) * cfg.dt
+            Ez_sim_valid = Ez_sim_f[band_idx]
+            H_sim = Ez_sim_valid / J_src_valid
+            H_sim_corrected = H_sim * np.exp(1j * omega * cfg.dt)
+            H_analytical = -(omega * cfg.mu0 / 4) * sp_special.hankel2(0, k0 * r)
+            results["_hankel_data"]["obs_points"][name] = {
+                "r": r,
+                "H_sim": H_sim_corrected,
+                "H_analytical": H_analytical
+            }
+
+        process_point("Recorder Full", results["recorder_full"][:, cfg.y1], cfg.x1, cfg.y1)
+        process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
+        process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
+        process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
 
         # Plotting — Magnitude and Phase only
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # Normalize at f_c (best SNR) instead of max() which is noise-sensitive
         idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
         
         ax = axes[0]
-        ax.plot(f_valid, np.abs(H_sim_corrected) / np.abs(H_sim_corrected[idx_fc]), label='Simulation', lw=2)
-        ax.plot(f_valid, np.abs(H_analytical) / np.abs(H_analytical[idx_fc]), '--', label='Analytical', lw=2)
         ax.plot(f_valid, np.abs(J_src_valid) / np.abs(J_src_valid[idx_fc]), label='Source', lw=2, color='lightgray', alpha=1.0)
-        ax.set_xscale('log')
         
-        # Calculate limit securely using a boolean mask
-        max_val = np.max(np.abs(H_sim_corrected[f_valid < cfg.f_break]) / np.abs(H_sim_corrected[idx_fc]))
+        data_main = results["_hankel_data"]["obs_points"]["Recorder Full"]
+        H_sim_c = data_main["H_sim"]
+        H_anal = data_main["H_analytical"]
+        norm_sim = np.abs(H_sim_c[idx_fc])
+        norm_anal = np.abs(H_anal[idx_fc])
+        
+        ax.plot(f_valid, np.abs(H_sim_c) / norm_sim, label='Simulation', lw=2)
+        ax.plot(f_valid, np.abs(H_anal) / norm_anal, '--', label='Analytical', lw=2)
+        
+        max_val = np.max(np.abs(H_sim_c[f_valid < cfg.f_break]) / norm_sim)
+        
+        axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_c)), label='Simulation', lw=2)
+        axes[1].plot(f_valid, np.unwrap(np.angle(H_anal)), '--', label='Analytical', lw=2)
+
         ax.set_ylim(0, 1.3 * max_val)
         ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)') 
         ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
+        ax.set_xscale('log')
         ax.set_title('Magnitude Response')
         ax.set_xlabel('Frequency (Hz)')
         ax.set_ylabel('Normalized Magnitude')
         ax.legend()
         ax.grid(True, which='both', alpha=0.3)
         
-        ax = axes[1]
-        ax.plot(f_valid, np.unwrap(np.angle(H_sim_corrected)), label='Simulation', lw=2)
-        ax.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical', lw=2)
-        ax.set_xscale('log')
-        ax.set_title('Phase Response')
-        ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('Phase (rad)')
-        ax.legend()
-        ax.grid(True, which='both', alpha=0.3)
+        axes[1].set_xscale('log')
+        axes[1].set_title('Phase Response')
+        axes[1].set_xlabel('Frequency (Hz)')
+        axes[1].set_ylabel('Phase (rad)')
+        axes[1].legend()
+        axes[1].grid(True, which='both', alpha=0.3)
         
         plt.tight_layout()
         plt.show()
@@ -532,13 +573,6 @@ class SimulationRunner:
         hd = results["_hankel_data"]
         cfg = results["config"]
         f_valid = hd["f_valid"]
-        H_sim, H_anal = hd["H_sim"], hd["H_analytical"]
-        
-        # Normalize both at f_c to remove constant amplitude offset from source injection
-        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
-        sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
-        anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
-        rel_error = np.abs(sim_mag - anal_mag) / anal_mag
         
         # Print key frequency limits
         f_src_max = cfg.f_c * (1 + 1)  # Source bandwidth edge: f_c + a*sigma_f = 2*f_c
@@ -548,20 +582,31 @@ class SimulationRunner:
         print(f"  Spatial Nyquist:     {f_nyquist:.3e} Hz  ({f_nyquist/cfg.f_c:.1f} * f_c)")
         print(f"  Yee num. cutoff:     {f_cutoff:.3e} Hz  ({f_cutoff/cfg.f_c:.1f} * f_c)")
         
-        # Phase Error Dispersion
-        sim_phase = np.unwrap(np.angle(H_sim))
-        anal_phase = np.unwrap(np.angle(H_anal))
-        # Compute difference and pin it to 0 at the central frequency
-        phase_diff = sim_phase - anal_phase
-        phase_diff -= phase_diff[idx_fc]
-        phase_error_deg = np.rad2deg(phase_diff)
-        
-        # Plot
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
         
-        # Magnitude Error
+        for i, (name, data) in enumerate(hd["obs_points"].items()):
+            H_sim, H_anal = data["H_sim"], data["H_analytical"]
+            
+            # Normalize both at f_c to remove constant amplitude offset from source injection
+            sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
+            anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
+            rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+            
+            # Phase Error Dispersion
+            sim_phase = np.unwrap(np.angle(H_sim))
+            anal_phase = np.unwrap(np.angle(H_anal))
+            # Compute difference and pin it to 0 at the central frequency
+            phase_diff = sim_phase - anal_phase
+            phase_diff -= phase_diff[idx_fc]
+            phase_error_deg = np.rad2deg(phase_diff)
+            
+            axes[0].plot(f_valid, rel_error * 100, label=name, lw=1.5, color=colors[i])
+            axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
+            
+        # Magnitude Error Formatting
         ax = axes[0]
-        ax.plot(f_valid, rel_error * 100, color='crimson', lw=1.5)
         ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)')
         ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({cfg.f_c:.2e} Hz)')
         ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
@@ -572,9 +617,8 @@ class SimulationRunner:
         ax.legend()
         ax.grid(True, which='both', alpha=0.3)
         
-        # Phase Error
+        # Phase Error Formatting
         ax = axes[1]
-        ax.plot(f_valid, phase_error_deg, color='purple', lw=1.5)
         ax.axvline(cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({cfg.f_break:.2e} Hz)')
         ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({cfg.f_c:.2e} Hz)')
         ax.axvline(cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({cfg.f_min:.2e} Hz)') 
@@ -584,6 +628,7 @@ class SimulationRunner:
         ax.set_ylabel('Phase Error (Degrees)')
         ax.legend()
         ax.grid(True, which='both', alpha=0.3)
+        
         plt.tight_layout()
         plt.show()
 
@@ -661,16 +706,28 @@ if __name__ == "__main__":
     
     print("Starting simulation...")
     
-    # Example 1: Full materials simulation, with grid refinement:
-    # results = SimulationRunner.run_full_analysis(wg_type="step", finesse=10, eps_core=2.22**2, eps_clad=2.218**2, free_space_sim=False, grid_refinement=True, do_hankel=False)
+    # # Example 1: Full materials simulation, with grid refinement:
+    # results = SimulationRunner.run_full_analysis(
+    #     wg_type = "step",
+    #     frame_skip = 5, 
+    #     finesse = 10, 
+    #     eps_core = 2.22**2, 
+    #     eps_clad = 2.218**2, 
+    #     free_space_sim = False, 
+    #     grid_refinement = True, 
+    #     do_hankel = False
+    # )
     
     # Free space sim to verify with Hankel
     results = SimulationRunner.run_full_analysis(
-        frame_skip=5, 
-        wg_type="step", finesse= 20, 
-        free_space_sim=True, grid_refinement=False, 
-        do_hankel=True, hankel_f_min=0, hankel_f_max=3*299792458,
-        x1 = 50, y1 = 50
+        frame_skip = 10, 
+        wg_type ="step", 
+        finesse = 25, 
+        free_space_sim = True, 
+        grid_refinement = False, 
+        do_hankel = True, 
+        hankel_f_min = 0, 
+        hankel_f_max = 3*299792458,
     )
 
     print("Simulation finished.")
