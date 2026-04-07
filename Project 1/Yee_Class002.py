@@ -38,11 +38,11 @@ class SimulationConfig:
         self.L_wg   = f * 10 * self.lam_c # Length of the waveguide in meters
         self.w_core = f * 3 * self.lam_c # Width of the core in meters
         self.w_clad = f * 3 * self.lam_c # Width of the cladding on each side in meters
-        self.w_air  = f * 1 * self.lam_c # Width of the air region on each side next to the cladding in meters
+        self.w_air  = f * 2.5 * self.lam_c # Width of the air region on each side next to the cladding in meters
         self.d      = f * 4 * self.lam_c # Distance between source and the barrier in meters
         self.t_m    = f * 0.03 * self.lam_c # Thickness of the barrier infront of the waveguide
         self.Ll     = f * 5 * self.lam_c # Length of the left region before the source in meters
-        self.Lr     = f * 1 * self.lam_c # Length of the right region after the waveguide in meters
+        self.Lr     = f * 2.5 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core) # Total width of the simulation domain in y direction in meters
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c # Total of time to capture the full pulse propagation through the waveguide
@@ -55,7 +55,7 @@ class SimulationConfig:
         
         self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
 
-        self.alpha = np.sqrt(2)
+        self.alpha = getattr(self, "alpha", 1.05)
         
         # Build Grids
         self._build_dx()
@@ -102,7 +102,8 @@ class SimulationConfig:
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
 
         # Time Stepping
-        CFL = 1.0
+        # Strictly keep CFL below 1.0 (e.g. 0.95) for unconditionally stable propagation into non-uniform domains
+        CFL = 0.95
         self.dt  = CFL / (self.c * np.sqrt((1/self.dx.min()**2) + (1/self.dy.min()**2)))
         self.nt = int(np.ceil(self.T / self.dt))
         
@@ -142,12 +143,12 @@ class SimulationConfig:
         
         self.dx = np.concatenate([
             np.full(self.n_Ll, self.Ll / self.n_Ll),
-            np.full(int(self.n_d - self.n_f_dt), self.d / (self.n_d - self.n_f_dt)),
+            np.full(int(self.n_d - self.n_f_dt), (self.d - self.L_f_dt) / (self.n_d - self.n_f_dt)),
             self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m,
             self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m,
-            np.full(int(self.n_wg - self.n_f_twg), self.L_wg / self.n_wg),
+            np.full(int(self.n_wg - self.n_f_twg), (self.L_wg - self.L_f_twg) / (self.n_wg - self.n_f_twg)),
             self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core),
-            np.full(int(self.n_Lr - self.n_f_wg_Lr), self.Lr / (self.n_Lr - self.n_f_wg_Lr))
+            np.full(int(self.n_Lr - self.n_f_wg_Lr), (self.Lr - self.L_f_wg_Lr) / (self.n_Lr - self.n_f_wg_Lr))
         ])
 
     def _build_dy(self):
@@ -197,11 +198,11 @@ class SimulationConfig:
             ]
             
         self.dy = np.concatenate([
-            np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac)),
+            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac)),
             self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
             *dy_mid,
             self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
-            np.full(int(self.n_air - self.n_f_ac), self.w_air / (self.n_air - self.n_f_ac))
+            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac))
         ])
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
@@ -255,9 +256,11 @@ class YeeSolver:
         self.Ez_dot_old = np.zeros_like(self.Ez_dot)
 
     def init_pml(self):
-        p, m = int(2.5 * self.cfg.finesse), 4
+        # Bound the PML thickness to 2x finesse (2 wavelengths), which effectively 
+        # utilizes the massive 2.5 wavelength air margin safely without collision.
+        p, m = int(2.0 * self.cfg.finesse), 4
         eta_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
-        ksi_k_max = 2.0 
+        ksi_k_max = 1.0 
         
         self.kx, self.ky = np.ones((self.cfg.nx, self.cfg.ny)), np.ones((self.cfg.nx, self.cfg.ny))
         self.etax, self.etay = np.zeros((self.cfg.nx, self.cfg.ny)), np.zeros((self.cfg.nx, self.cfg.ny))
@@ -706,28 +709,28 @@ if __name__ == "__main__":
     
     print("Starting simulation...")
     
-    # # Example 1: Full materials simulation, with grid refinement:
-    # results = SimulationRunner.run_full_analysis(
-    #     wg_type = "step",
-    #     frame_skip = 5, 
-    #     finesse = 10, 
-    #     eps_core = 2.22**2, 
-    #     eps_clad = 2.218**2, 
-    #     free_space_sim = False, 
-    #     grid_refinement = True, 
-    #     do_hankel = False
-    # )
-    
-    # Free space sim to verify with Hankel
+    # Example 1: Full materials simulation, with grid refinement:
     results = SimulationRunner.run_full_analysis(
-        frame_skip = 10, 
-        wg_type ="step", 
-        finesse = 25, 
-        free_space_sim = True, 
-        grid_refinement = False, 
-        do_hankel = True, 
-        hankel_f_min = 0, 
-        hankel_f_max = 3*299792458,
+        wg_type = "step",
+        frame_skip = 5, 
+        finesse = 10, 
+        eps_core = 2.22**2, 
+        eps_clad = 2.218**2, 
+        free_space_sim = False, 
+        grid_refinement = True, 
+        do_hankel = False
     )
+    
+    # # Free space sim to verify with Hankel
+    # results = SimulationRunner.run_full_analysis(
+    #     frame_skip = 10, 
+    #     wg_type ="step", 
+    #     finesse = 10, 
+    #     free_space_sim = True, 
+    #     grid_refinement = False, 
+    #     do_hankel = True, 
+    #     hankel_f_min = 0, 
+    #     hankel_f_max = 3*299792458,
+    # )
 
     print("Simulation finished.")

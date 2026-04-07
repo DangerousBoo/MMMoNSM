@@ -36,7 +36,7 @@ class FCI_TM_Solver:
         # Source Parameters
         self.f_c    = self.c / self.lambda0
         self.A      = 1.0
-        self.a      = 4 # Amount of sigmas between fc and 0 in frequency domain
+        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
 
