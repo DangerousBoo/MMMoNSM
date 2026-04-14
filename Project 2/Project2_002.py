@@ -90,8 +90,9 @@ class SimulationConfig:
             
         i_arr = np.arange(self.n_layer)
         dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
-        self.U_I[:self.n_layer] = 2.0 * self.V0 * dist_factor
-        self.U_I[-self.n_layer:] = 2.0 * self.V0 * dist_factor[::-1]
+        abs_V = self.V0 if self.V0 != 0 else 0.2 * self.e # laatste is vr de free space sim
+        self.U_I[:self.n_layer] = 2.0 * abs_V * dist_factor
+        self.U_I[-self.n_layer:] = 2.0 * abs_V * dist_factor[::-1]
 
 class SchrodingerSolver:
     def __init__(self, cfg):
@@ -248,4 +249,4 @@ plt.xlabel("Energy (eV)")
 plt.ylabel("Transmission Coefficient T")
 plt.grid(True)
 
-SimulationRunner.plot_animation(results_barrier)
+SimulationRunner.plot_animation(results_free)
