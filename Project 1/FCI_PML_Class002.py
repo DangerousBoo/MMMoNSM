@@ -9,11 +9,12 @@ import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
 
 class FCI_TM_Solver:
-    def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver = "default"):
+    def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver="Schur", finesse=20):
         # Parameters
         self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
         self.lambda0, self.CFL = lambda0, CFL
-        self.dx, self.dy = lambda0 / 30, lambda0 / 30
+        self.finesse = finesse
+        self.dx, self.dy = lambda0 / self.finesse, lambda0 / self.finesse
         self.bc = bc.upper()
         self.solver = solver
 
@@ -35,7 +36,7 @@ class FCI_TM_Solver:
         # Source Parameters
         self.f_c    = self.c / self.lambda0
         self.A      = 1.0
-        self.a      = 4 # Amount of sigmas between fc and 0 in frequency domain
+        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
         self.sig_t  = self.a / (2 * np.pi * self.f_c)
         self.t0     = 4 * self.sig_t
 
@@ -63,8 +64,8 @@ class FCI_TM_Solver:
         self.sx = np.zeros((self.nx_n,self.ny_n))
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
-        p, m = 20, 4
-        k_max = 1
+        p, m = int(1 * self.finesse), 4
+        k_max = 2
         s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
         for i in range(p):
@@ -245,7 +246,7 @@ class FCI_TM_Solver:
             self.solve_func = solve_schur
             
 
-    def run_simulation(self, src_pos, obs_pos):
+    def run_simulation(self, src_pos, obs_pos, frame_skip=2):
         u = np.zeros(self.total_len)
         ez_history = []
         movie_frames = []
@@ -262,6 +263,11 @@ class FCI_TM_Solver:
         # weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
 
         fig, ax = plt.subplots()
+        
+        # Static markers for source and observation points
+        ax.scatter(x0 * self.dx, y0 * self.dy, color='red', s=40, zorder=2, label='Source')
+        ax.scatter(x_obs * self.dx, y_obs * self.dy, color='green', s=40, zorder=2, label='Observer')
+        ax.legend(loc='upper right', fontsize=8)
 
         for i in tqdm(range(self.Nt), desc=f"Simulating ({self.bc})"):
             t = i * self.dt
@@ -277,10 +283,10 @@ class FCI_TM_Solver:
             ez_2d = u[self.idx_ez].reshape((self.nx_n, self.ny_n))
             ez_history.append(ez_2d[x_obs, y_obs])
             
-            if i % 2 == 0:
+            if i % frame_skip == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
                 img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
-                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1)
+                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1, zorder=1)
                 movie_frames.append([txt, img])
         
         ani = ArtistAnimation(fig, movie_frames, interval=100, blit=True)
@@ -296,7 +302,9 @@ class FCI_TM_Solver:
         plt.grid(True)
         plt.show()
 
-    def verify_with_hankel(self, ez_obs_data, src_pos, obs_pos):
+    def verify_with_hankel(self, ez_obs_data, src_pos, obs_pos, hankel_f_min=None, hankel_f_max=None):
+        print("\n--- Plotting Hankel verification ---")
+        
         dx_m = (obs_pos[0] - src_pos[0]) * self.dx
         dy_m = (obs_pos[1] - src_pos[1]) * self.dy
         r = np.sqrt(dx_m**2 + dy_m**2)
@@ -306,46 +314,143 @@ class FCI_TM_Solver:
 
         # Setup time and frequency 
         t = np.arange(self.Nt) * self.dt
-        freqs = fftfreq(self.Nt, self.dt)
-        band_idx = np.where((freqs > self.f_c * 0.2) & (freqs < self.f_c * 1.8))[0]
+        n_pad = 2**int(np.ceil(np.log2(self.Nt * 8)))  # High resolution zero padding
+        freqs = fftfreq(n_pad, self.dt)
+        f_min = hankel_f_min if hankel_f_min is not None else self.f_c * 0.2
+        f_max = hankel_f_max if hankel_f_max is not None else self.f_c * 1.8
+        band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
         f_valid = freqs[band_idx]
         omega = 2 * np.pi * f_valid
         k0 = omega / self.c
         
-        # FFT of simulation data and the source function
+        # FFT of simulation data and the source function (with zero padding)
         src_time = self.my_src(t)
-        Ez_sim_f = fft(ez_obs_data) * self.dt
-        Ez_sim_valid = Ez_sim_f[band_idx]
-        J_src_f = fft(src_time) * self.dt
+        J_src_f = fft(src_time, n=n_pad) * self.dt
         J_src_valid = J_src_f[band_idx]
+        
+        Ez_sim_f = fft(ez_obs_data, n=n_pad) * self.dt
+        Ez_sim_valid = Ez_sim_f[band_idx]
+        
         H_sim = Ez_sim_valid / J_src_valid
         H_sim_corrected = H_sim * np.exp(1j * omega * self.dt)
 
         # Analytical Solution
         H_analytical = -(omega * self.mu / 4) * sp_special.hankel2(0, k0 * r)
         
+        # Save Hankel data for error analysis
+        self._hankel_data = {
+            "f_valid": f_valid, 
+            "obs_points": {
+                "Observation Point": {
+                    "H_sim": H_sim_corrected,
+                    "H_analytical": H_analytical
+                }
+            }
+        }
 
-        # Plotting
-        plt.figure(figsize=(12, 5))
-        # Magnitude Plot
-        plt.subplot(1, 2, 1)
-        plt.plot(f_valid, np.abs(H_sim_corrected) / np.max(np.abs(H_sim_corrected)), label='Simulation', lw=2)
-        plt.plot(f_valid, np.abs(H_analytical) / np.max(np.abs(H_analytical)), '--', label='Analytical', lw=2)
-        plt.title('Magnitude Response')
-        plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Normalized Magnitude')
-        plt.legend()
-        plt.grid(True)
+        # Plotting — Magnitude and Phase only
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        idx_fc = np.argmin(np.abs(f_valid - self.f_c))
         
-        # Phase Plot
-        plt.subplot(1, 2, 2)
-        plt.plot(f_valid,  np.unwrap(np.angle(H_sim_corrected)), label='Simulation Phase', lw=2)
-        plt.plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical Phase', lw=2)
-        plt.title('Phase Response')
-        plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Phase (rad)')
-        plt.legend()
-        plt.grid(True)
+        ax = axes[0]
+        ax.plot(f_valid, np.abs(J_src_valid) / np.abs(J_src_valid[idx_fc]), label='Source', lw=2, color='lightgray', alpha=1.0)
+        
+        norm_sim = np.abs(H_sim_corrected[idx_fc])
+        norm_anal = np.abs(H_analytical[idx_fc])
+        
+        ax.plot(f_valid, np.abs(H_sim_corrected) / norm_sim, label='Simulation', lw=2)
+        ax.plot(f_valid, np.abs(H_analytical) / norm_anal, '--', label='Analytical', lw=2)
+        
+        f_break = 2 * self.f_c
+        max_val = np.max(np.abs(H_sim_corrected[f_valid < f_break]) / norm_sim) if np.any(f_valid < f_break) else 1.0
+        
+        axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_corrected)), label='Simulation', lw=2)
+        axes[1].plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical', lw=2)
+
+        ax.set_ylim(0, 1.3 * max_val)
+        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
+        ax.axvline(f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({f_break:.2e} Hz)')
+        ax.axvline(f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({f_min:.2e} Hz)')
+        ax.set_xscale('log')
+        ax.set_title('Magnitude Response')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Normalized Magnitude')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
+        axes[1].set_xscale('log')
+        axes[1].set_title('Phase Response')
+        axes[1].set_xlabel('Frequency (Hz)')
+        axes[1].set_ylabel('Phase (rad)')
+        axes[1].legend()
+        axes[1].grid(True, which='both', alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+
+    def plot_error_analysis(self):
+        if not hasattr(self, "_hankel_data"):
+            print("Run verify_with_hankel first!")
+            return
+            
+        hd = self._hankel_data
+        f_valid = hd["f_valid"]
+        
+        # Print key frequency limits
+        f_src_max = self.f_c * (1 + 1)  # Source bandwidth edge
+        f_nyquist = self.c / (2 * min(self.dx, self.dy))
+        f_cutoff = (1 / (np.pi * self.dt)) * np.arcsin(self.c * self.dt / min(self.dx, self.dy))
+        print(f"  Source bandwidth:    ~[0, {f_src_max:.3e}] Hz  (2 * f_c)")
+        print(f"  Spatial Nyquist:     {f_nyquist:.3e} Hz  ({f_nyquist/self.f_c:.1f} * f_c)")
+        print(f"  Yee num. cutoff:     {f_cutoff:.3e} Hz  ({f_cutoff/self.f_c:.1f} * f_c)")
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        idx_fc = np.argmin(np.abs(f_valid - self.f_c))
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        
+        for i, (name, data) in enumerate(hd["obs_points"].items()):
+            H_sim, H_anal = data["H_sim"], data["H_analytical"]
+            
+            # Normalize both at f_c to remove constant amplitude offset from source injection
+            sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
+            anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
+            rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+            
+            # Phase Error Dispersion
+            sim_phase = np.unwrap(np.angle(H_sim))
+            anal_phase = np.unwrap(np.angle(H_anal))
+            # Compute difference and pin it to 0 at the central frequency
+            phase_diff = sim_phase - anal_phase
+            phase_diff -= phase_diff[idx_fc]
+            phase_error_deg = np.rad2deg(phase_diff)
+            
+            axes[0].plot(f_valid, rel_error * 100, label=name, lw=1.5, color=colors[i])
+            axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
+            
+        # Magnitude Error Formatting
+        ax = axes[0]
+        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
+        ax.axvline(2 * self.f_c, color='red', ls=':', alpha=0.5, label=f'f_break ({2 * self.f_c:.2e} Hz)')
+        ax.axvline(self.f_c * 0.2, color='green', ls=':', alpha=0.5, label=f'f_min ({self.f_c * 0.2:.2e} Hz)')
+        ax.set_xscale('log')
+        ax.set_title('Relative Magnitude Error')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Relative Error (%)')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
+        # Phase Error Formatting
+        ax = axes[1]
+        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
+        ax.axvline(2 * self.f_c, color='red', ls=':', alpha=0.5, label=f'f_break ({2 * self.f_c:.2e} Hz)')
+        ax.axvline(self.f_c * 0.2, color='green', ls=':', alpha=0.5, label=f'f_min ({self.f_c * 0.2:.2e} Hz)')
+        ax.set_xscale('log')
+        ax.set_title('Phase Error Dispersion')
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('Phase Error (Degrees)')
+        ax.legend()
+        ax.grid(True, which='both', alpha=0.3)
+        
         plt.tight_layout()
         plt.show()
 
@@ -353,12 +458,15 @@ class FCI_TM_Solver:
     def run_full_analysis(cls, params):
         src_pos = params.pop('Source_loc', (50, 100))
         obs_pos = params.pop('Obs_loc', (70, 100))
+        frame_skip = params.pop('frame_skip', 2)
+        hankel_f_min = params.pop('hankel_f_min', None)
+        hankel_f_max = params.pop('hankel_f_max', None)
         
         t0 = time.time()
         solver = cls(**params)
         
         # Run simulation
-        ani, ez_data = solver.run_simulation(src_pos, obs_pos)
+        ani, ez_data = solver.run_simulation(src_pos, obs_pos, frame_skip=frame_skip)
         t1 = time.time()
         exec_time = t1 - t0
         print(f"\n>>> [{solver.solver} solver] Execution time (Setup + Sim): {exec_time:.4f} seconds <<<\n")
@@ -366,53 +474,44 @@ class FCI_TM_Solver:
         # Plot 1D intensity at observer
         solver.plot_1d_intensity(solver.dt, ez_data)
         # Verify against analytical Hankel
-        solver.verify_with_hankel(ez_data, src_pos, obs_pos)
+        solver.verify_with_hankel(ez_data, src_pos, obs_pos, hankel_f_min, hankel_f_max)
+        solver.plot_error_analysis()
         
         return ez_data, exec_time
 
 
 sim_params = {
-    'Nx': 400, 
-    'Ny': 400, 
+    'Nx': 200, 
+    'Ny': 200, 
     'Nt': 300, 
     'lambda0': 1, 
     'CFL': 2,
     'Source_loc' : (50,100),
     'Obs_loc' : (80,100),
     'bc': 'PBC',
-    'solver': 'Schur'
+    'solver': 'Schur',
+    'finesse': 30,
+    'frame_skip': 3,
+    'hankel_f_min': 0.0,
+    'hankel_f_max': 3 * 299792458
 }
 
 results, time_schur = FCI_TM_Solver.run_full_analysis(sim_params)
 
-sim_params_2 = {
-    'Nx': 400, 
-    'Ny': 400, 
-    'Nt': 300, 
-    'lambda0': 1, 
-    'CFL': 2,
-    'Source_loc' : (50,100),
-    'Obs_loc' : (80,100),
-    'bc': 'PBC',
-    'solver': 'default'
-}
+# sim_params_2 = {
+#     'Nx': 200, 
+#     'Ny': 200, 
+#     'Nt': 300, 
+#     'lambda0': 1, 
+#     'CFL': 2,
+#     'Source_loc' : (50,100),
+#     'Obs_loc' : (80,100),
+#     'bc': 'PBC',
+#     'solver': 'default'
+# }
 
-results_2, time_default = FCI_TM_Solver.run_full_analysis(sim_params_2)
+# results_2, time_default = FCI_TM_Solver.run_full_analysis(sim_params_2)
 
-print("\n--- Final Performance Comparison ---")
+# print("\n--- Final Performance Comparison ---")
 print(f"Schur complement solver time: {time_schur:.4f} seconds")
-print(f"Default solver time:          {time_default:.4f} seconds")
-
-sim_params_3 = {
-    'Nx': 400, 
-    'Ny': 400, 
-    'Nt': 300, 
-    'lambda0': 1, 
-    'CFL': 2,
-    'Source_loc' : (50,100),
-    'Obs_loc' : (80,100),
-    'bc': 'PEC',
-    'solver': 'Schur'
-}
-
-results_3, time_schur_3 = FCI_TM_Solver.run_full_analysis(sim_params_3)
+# print(f"Default solver time:          {time_default:.4f} seconds")
