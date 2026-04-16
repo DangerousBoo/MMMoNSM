@@ -85,8 +85,13 @@ class SimulationConfig:
         self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else self.nx - 50
         self.y1 = self.y0 + kwargs["y1"] if "y1" in kwargs else self.y0
 
-        self.x_diag = getattr(self, "x_diag", self.x0 + 20)
-        self.y_diag = getattr(self, "y_diag", self.y0 + 20)
+        # Guaranteed 45-degree physical diagonal
+        dist_req = self.d / 2.0
+        offset_x = np.searchsorted(np.cumsum(self.dx[self.x0:]), dist_req)
+        offset_y = np.searchsorted(np.cumsum(self.dy[self.y0:]), dist_req)
+        self.x_diag = getattr(self, "x_diag", self.x0 + offset_x)
+        self.y_diag = getattr(self, "y_diag", self.y0 + offset_y)
+
         self.x_after = getattr(self, "x_after", self.nx - 50)
         self.y_after = getattr(self, "y_after", self.y0)
         self.x_before = getattr(self, "x_before", self.x0 + int(self.n_d // 2))
@@ -568,7 +573,7 @@ class SimulationAnalyzer:
         n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))
         freqs = fftfreq(n_pad, cfg.dt)
         f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0.2)
-        f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 1.8)
+        f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 3.0)
         band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
         f_valid = freqs[band_idx]
         omega = 2 * np.pi * f_valid
