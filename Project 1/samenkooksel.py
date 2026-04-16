@@ -81,6 +81,12 @@ class SimulationConfig:
         self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else self.nx - 50
         self.y1 = self.y0 + kwargs["y1"] if "y1" in kwargs else self.y0
 
+        dist_req = self.d / 2.0
+        offset_x = np.searchsorted(np.cumsum(self.dx[self.x0:]), dist_req)
+        offset_y = np.searchsorted(np.cumsum(self.dy[self.y0:]), dist_req)
+        self.x_diag = getattr(self, "x_diag", self.x0 + offset_x)
+        self.y_diag = getattr(self, "y_diag", self.y0 + offset_y)
+
         self.x_after = getattr(self, "x_after", self.nx - 50)
         self.y_after = getattr(self, "y_after", self.y0)
         self.x_before = getattr(self, "x_before", self.x0 + int(self.n_d // 2))
@@ -171,7 +177,7 @@ class SimulationConfig:
             return
         
         if self.grid_refinement == "gradual":    
-            self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
+            self.L_f_ac, self.n_f_ac = self._L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
             self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
             
             if self.wg_type == "step":
