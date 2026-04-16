@@ -137,6 +137,7 @@ class SimulationConfig:
                 np.full(self.n_Lr, self.Lr / self.n_Lr)
             ])
             return
+
         if self.grid_refinement == "gradual":    
             self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
             self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
@@ -155,6 +156,7 @@ class SimulationConfig:
                 self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core),
                 np.full(int(self.n_Lr - self.n_f_wg_Lr), (self.Lr - self.L_f_wg_Lr) / (self.n_Lr - self.n_f_wg_Lr))
             ])
+            
         if self.grid_refinement == "step":
             self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
             self.n_d = int(np.ceil(self.d / self.dx_0))
@@ -184,6 +186,7 @@ class SimulationConfig:
                 np.full(self.n_air, self.w_air / self.n_air)
             ])
             return
+
         if self.grid_refinement == "gradual":    
             self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
             self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
