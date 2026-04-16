@@ -58,7 +58,7 @@ class SimulationConfig:
         self.E_trans = (self.hbar**2 / (2 * self.m_star)) * ((np.pi * self.n_y / self.Ly)**2 + (np.pi * self.n_z / self.Lz)**2)
         
         # Energy and Potentials
-        self.V0 = getattr(self, "V0", 0.2) * self.e # Evaluate V0 kwarg input as eV
+        self.V0 = getattr(self, "V0", 0.6) * self.e # Evaluate V0 kwarg input as eV
         self.V_DC = getattr(self, "V_DC", 0.4 ) # Bias voltage
         
         # Initialize Potentials
@@ -414,11 +414,11 @@ if __name__ == '__main__':
     # === RUN EXPERIMENT ===
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
-    # 1. Single Voltage Spectrum (Uncomment to view)
-    # results_barrier = SimulationRunner.execute(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=10000.0e-15, E_target=0.55, frame_skip=500)
-    # results_free = SimulationRunner.execute(n_y=1, n_z=1, V0=0.0, V_DC=0.0, T_total=10000.0e-15, E_target=0.55, frame_skip=500, dt=results_barrier["config"].dt)
-    # TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    # SimulationRunner.plot_animation(results_barrier)
+    # # 1. Single Voltage Spectrum (Uncomment to view)
+    results_barrier = SimulationRunner.execute(n_y=1, n_z=1, V0=0.6, V_DC=-0.2, T_total=1000.0e-15, E_target=0.55, frame_skip=500)
+    results_free = SimulationRunner.execute(n_y=1, n_z=1, V0=0.0, V_DC=0.0, T_total=1000.0e-15, E_target=0.55, frame_skip=500, dt=results_barrier["config"].dt)
+    TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    SimulationRunner.plot_animation(results_barrier)
     
     # 2. Extract I-V Curve showing Negative Differential Resistance
     # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
