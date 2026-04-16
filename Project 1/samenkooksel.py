@@ -125,11 +125,11 @@ class SimulationConfig:
 
         if self.grid_refinement == "gradual":    
             self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
-            self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
+            self.L_f_dt, self.n_f_dt = self._L_and_n_fine(self.dx_0, self.t_m, self.alpha)
             self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
-            self.L_f_twg, self.n_f_twg = self.L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
+            self.L_f_twg, self.n_f_twg = self._L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
             self.n_wg = int(np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg)
-            self.L_f_wg_Lr, self.n_f_wg_Lr = self.L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
+            self.L_f_wg_Lr, self.n_f_wg_Lr = self._L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
             self.n_Lr = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
             
             self.dx = np.concatenate([
@@ -336,7 +336,7 @@ class FCISolver:
 
 
         # PBC drops the redundant N+1 boundary node to form a perfect ring
-        if self.cfg.bc == 'PBC':
+        if self.cfg.fci_bc == 'PBC':
             self.nx_n = self.cfg.nx
             self.ny_n = self.cfg.ny
             self.cfg.dx = np.append(self.cfg.dx, self.cfg.dx_0)
@@ -386,7 +386,7 @@ class FCISolver:
         return self.sx, self.sy, self.kx, self.ky
     
     def _get_operators(self, n, d):
-        if self.cfg.bc == 'PBC':
+        if self.cfg.fci_bc == 'PBC':
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
