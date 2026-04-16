@@ -4,46 +4,36 @@ from tqdm import tqdm
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import matplotlib.pyplot as plt
-from matplotlib.animation import ArtistAnimation
+from matplotlib.animation import FuncAnimation
 import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
 
+from Yee_Class002 import SimulationConfig
+
 class FCI_TM_Solver:
-    def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver="Schur", finesse=20):
-        # Parameters
-        self.Nx, self.Ny, self.Nt = Nx, Ny, Nt
-        self.lambda0, self.CFL = lambda0, CFL
-        self.finesse = finesse
-        self.dx, self.dy = lambda0 / self.finesse, lambda0 / self.finesse
-        self.bc = bc.upper()
-        self.solver = solver
+    def __init__(self, config): #Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver="Schur", finesse=20):
+        self.cfg = config
+
 
         # PBC drops the redundant N+1 boundary node to form a perfect ring
-        self.nx_n = self.Nx if self.bc == 'PBC' else self.Nx + 1
-        self.ny_n = self.Ny if self.bc == 'PBC' else self.Ny + 1
-
-        # Material shizzle
-        self.eps, self.mu, self.c = 8.854e-12, 1.256e-6, 3e8
-        self.Z0 = np.sqrt(self.mu / self.eps)
-
-        self.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
-        self.gamma = 0.0
-        self.epsilon_r  = np.ones((self.nx_n, self.ny_n))
-
-        self.v_local = self.c / np.sqrt(self.epsilon_r)
-        self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
+        if self.cfg.bc == 'PBC':
+            self.nx_n = self.cfg.nx
+            self.ny_n = self.cfg.ny
+            self.cfg.dx = np.append(self.cfg.dx, self.cfg.dx_0)
+            self.cfg.dy = np.append(self.cfg.dy, self.cfg.dy_0)
+        else:
+            self.nx_n = self.cfg.nx + 1
+            self.ny_n = self.cfg.ny + 1
+            self.cfg.dx = np.append(self.cfg.dx, self.cfg.dx_0)
+            self.cfg.dy = np.append(self.cfg.dy, self.cfg.dy_0)
         
-        # Source Parameters
-        self.f_c    = self.c / self.lambda0
-        self.A      = 1.0
-        self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
-        self.sig_t  = self.a / (2 * np.pi * self.f_c)
-        self.t0     = 4 * self.sig_t
 
-        # Component lengths
-        self.dt = CFL / (self.c * np.sqrt(1/self.dx**2 + 1/self.dy**2))
-        self.len_hx = self.nx_n * self.Ny
-        self.len_hy = self.Nx * self.ny_n
+        self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
+        self.cfg.gamma = 0.0
+        self.cfg.epsilon_r  = np.ones((self.nx_n, self.ny_n))
+
+        self.len_hx = self.nx_n * self.cfg.ny
+        self.len_hy = self.cfg.nx * self.ny_n
         self.len_ez = self.nx_n * self.ny_n
         
         # Hx & Hx_dot + Hy & Hy_dot + Ez & Ez_dot & Ez_ddot & Jz:
@@ -55,8 +45,8 @@ class FCI_TM_Solver:
 
     def my_src(self, t):
         # Gaussian Pulse: A * cos(2*pi*fc*(t-t0)) * exp(-0.5 * ((t-t0)/sig_t)**2)
-        return self.A * np.cos(2 * np.pi * self.f_c * (t - self.t0)) * \
-               np.exp(-0.5 * ((t - self.t0) / self.sig_t)**2)
+        return self.cfg.A * np.cos(2 * np.pi * self.cfg.f_c * (t - self.cfg.t0)) * \
+               np.exp(-0.5 * ((t - self.cfg.t0) / self.cfg.sig_t)**2)
 
     def _get_pml_profiles(self):
         self.kx = np.ones((self.nx_n,self.ny_n))
@@ -64,9 +54,9 @@ class FCI_TM_Solver:
         self.sx = np.zeros((self.nx_n,self.ny_n))
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
-        p, m = int(1 * self.finesse), 4
+        p, m = int(1 * self.cfg.finesse), 4
         k_max = 2
-        s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
+        s_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
 
         for i in range(p):
             d_pml = (p - i) / p
@@ -81,12 +71,12 @@ class FCI_TM_Solver:
         return self.sx, self.sy, self.kx, self.ky
     
     def _get_operators(self, n, d):
-        if self.bc == 'PBC':
+        if self.cfg.bc == 'PBC':
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
-            Dx = sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr') / (2*d)
-            Dtx = sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr') / (2*d)
+            Dx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
+            Dtx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
             
             A1 = sp.diags_array([ones, ones, ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
             A2 = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
@@ -96,7 +86,7 @@ class FCI_TM_Solver:
         else:
             Ix = sp.eye(n + 1, format='csr')
 
-            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / (2*d)
+            Dx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0))
             Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
             Dtx[n, n-1] = - 1 / d
 
@@ -106,11 +96,11 @@ class FCI_TM_Solver:
             return Ix, Dx.tocsr(), Dtx.tocsr(), A1.tocsr(), A2.tocsr()
 
     def _build_system(self):
-        v, c, Z, gamma, dt = self.v_local, self.c, self.Z_local, self.gamma, self.dt
+        v, c, Z, gamma, dt = self.cfg.v_local, self.cfg.c, self.cfg.Z_local, self.cfg.gamma, self.cfg.dt
         sx, sy, kx, ky = self._get_pml_profiles()
 
-        Ix, Dx, Dtx, Ax1, Ax2 = self._get_operators(self.Nx, self.dx)
-        Iy, Dy, Dty, Ay1, Ay2 = self._get_operators(self.Ny, self.dy)
+        Ix, Dx, Dtx, Ax1, Ax2 = self._get_operators(self.nx_n, self.cfg.dx)
+        Iy, Dy, Dty, Ay1, Ay2 = self._get_operators(self.ny_n, self.cfg.dy)
         
         DY_ez_to_hx = sp.kron(Ix, Dy)  # Size: len_hx x len_ez
         DX_ez_to_hy = sp.kron(Dx, Iy)  # Size: len_hy x len_ez
@@ -162,7 +152,7 @@ class FCI_TM_Solver:
         L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
         L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
         L71 = DY_hx_to_ez;      L73 = -DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
-        L87 = to_diag_vec(-self.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
+        L87 = to_diag_vec(-self.cfg.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
@@ -184,7 +174,7 @@ class FCI_TM_Solver:
         R55 = to_diag_vec(bym);                         R56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
         R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
         R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
-        R87 = to_diag_vec(self.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
+        R87 = to_diag_vec(self.cfg.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
 
         # Assemble RHS Block Matrix
         self.RHS = sp.bmat([
@@ -198,11 +188,11 @@ class FCI_TM_Solver:
             [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
-        if self.solver == "default":
+        if self.cfg.solver == "default":
             print("Pre-factoring the 8x8 system...")
             self.solve_func = spla.factorized(self.LHS.tocsc())
 
-        elif self.solver == "Schur":
+        elif self.cfg.solver == "Schur":
             print("Pre-factoring the 8x8 system using Schur complement...")
             
             # Extract blocks
@@ -246,15 +236,13 @@ class FCI_TM_Solver:
             self.solve_func = solve_schur
             
 
-    def run_simulation(self, src_pos, obs_pos, frame_skip=2):
+    def run_simulation(self):
         u = np.zeros(self.total_len)
         ez_history = []
-        movie_frames = []
         
         # Global index for Ez component at src_pos
         offset = 2 * self.len_hx + 2 * self.len_hy
-        x0, y0 = src_pos
-        x_obs, y_obs = obs_pos
+        x0, y0 = self.cfg.x0, self.cfg.y0
 
         src_idx = offset + x0 * self.ny_n + y0
 
@@ -262,15 +250,9 @@ class FCI_TM_Solver:
         # neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
         # weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
 
-        fig, ax = plt.subplots()
-        
-        # Static markers for source and observation points
-        ax.scatter(x0 * self.dx, y0 * self.dy, color='red', s=40, zorder=2, label='Source')
-        ax.scatter(x_obs * self.dx, y_obs * self.dy, color='green', s=40, zorder=2, label='Observer')
-        ax.legend(loc='upper right', fontsize=8)
 
-        for i in tqdm(range(self.Nt), desc=f"Simulating ({self.bc})"):
-            t = i * self.dt
+        for i in tqdm(range(self.cfg.nt), desc=f"Simulating ({self.cfg.bc})"):
+            t = i * self.cfg.dt
             b = self.RHS.dot(u)
 
             #Smooth source over a couple of grid points to prevent checkerboarding
@@ -281,16 +263,9 @@ class FCI_TM_Solver:
 
             u = self.solve_func(b)
             ez_2d = u[self.idx_ez].reshape((self.nx_n, self.ny_n))
-            ez_history.append(ez_2d[x_obs, y_obs])
+            ez_history.append(ez_2d)
             
-            if i % frame_skip == 0:
-                txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
-                                extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1, zorder=1)
-                movie_frames.append([txt, img])
-        
-        ani = ArtistAnimation(fig, movie_frames, interval=100, blit=True)
-        return ani, np.array(ez_history)
+        return np.array(ez_history)
 
     @staticmethod
     def plot_1d_intensity(dt, ez_rec):
@@ -302,216 +277,52 @@ class FCI_TM_Solver:
         plt.grid(True)
         plt.show()
 
-    def verify_with_hankel(self, ez_obs_data, src_pos, obs_pos, hankel_f_min=None, hankel_f_max=None):
-        print("\n--- Plotting Hankel verification ---")
-        
-        dx_m = (obs_pos[0] - src_pos[0]) * self.dx
-        dy_m = (obs_pos[1] - src_pos[1]) * self.dy
-        r = np.sqrt(dx_m**2 + dy_m**2)
-        
-        if r == 0:
-            raise ValueError("r must be greater than zero")
-
-        # Setup time and frequency 
-        t = np.arange(self.Nt) * self.dt
-        n_pad = 2**int(np.ceil(np.log2(self.Nt * 8)))  # High resolution zero padding
-        freqs = fftfreq(n_pad, self.dt)
-        f_min = hankel_f_min if hankel_f_min is not None else self.f_c * 0.2
-        f_max = hankel_f_max if hankel_f_max is not None else self.f_c * 1.8
-        band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
-        f_valid = freqs[band_idx]
-        omega = 2 * np.pi * f_valid
-        k0 = omega / self.c
-        
-        # FFT of simulation data and the source function (with zero padding)
-        src_time = self.my_src(t)
-        J_src_f = fft(src_time, n=n_pad) * self.dt
-        J_src_valid = J_src_f[band_idx]
-        
-        Ez_sim_f = fft(ez_obs_data, n=n_pad) * self.dt
-        Ez_sim_valid = Ez_sim_f[band_idx]
-        
-        H_sim = Ez_sim_valid / J_src_valid
-        H_sim_corrected = H_sim * np.exp(1j * omega * self.dt)
-
-        # Analytical Solution
-        H_analytical = -(omega * self.mu / 4) * sp_special.hankel2(0, k0 * r)
-        
-        # Save Hankel data for error analysis
-        self._hankel_data = {
-            "f_valid": f_valid, 
-            "obs_points": {
-                "Observation Point": {
-                    "H_sim": H_sim_corrected,
-                    "H_analytical": H_analytical
-                }
-            }
-        }
-
-        # Plotting — Magnitude and Phase only
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        idx_fc = np.argmin(np.abs(f_valid - self.f_c))
-        
-        ax = axes[0]
-        ax.plot(f_valid, np.abs(J_src_valid) / np.abs(J_src_valid[idx_fc]), label='Source', lw=2, color='lightgray', alpha=1.0)
-        
-        norm_sim = np.abs(H_sim_corrected[idx_fc])
-        norm_anal = np.abs(H_analytical[idx_fc])
-        
-        ax.plot(f_valid, np.abs(H_sim_corrected) / norm_sim, label='Simulation', lw=2)
-        ax.plot(f_valid, np.abs(H_analytical) / norm_anal, '--', label='Analytical', lw=2)
-        
-        f_break = 2 * self.f_c
-        max_val = np.max(np.abs(H_sim_corrected[f_valid < f_break]) / norm_sim) if np.any(f_valid < f_break) else 1.0
-        
-        axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_corrected)), label='Simulation', lw=2)
-        axes[1].plot(f_valid, np.unwrap(np.angle(H_analytical)), '--', label='Analytical', lw=2)
-
-        ax.set_ylim(0, 1.3 * max_val)
-        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
-        ax.axvline(f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({f_break:.2e} Hz)')
-        ax.axvline(f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({f_min:.2e} Hz)')
-        ax.set_xscale('log')
-        ax.set_title('Magnitude Response')
-        ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('Normalized Magnitude')
-        ax.legend()
-        ax.grid(True, which='both', alpha=0.3)
-        
-        axes[1].set_xscale('log')
-        axes[1].set_title('Phase Response')
-        axes[1].set_xlabel('Frequency (Hz)')
-        axes[1].set_ylabel('Phase (rad)')
-        axes[1].legend()
-        axes[1].grid(True, which='both', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-
-    def plot_error_analysis(self):
-        if not hasattr(self, "_hankel_data"):
-            print("Run verify_with_hankel first!")
-            return
-            
-        hd = self._hankel_data
-        f_valid = hd["f_valid"]
-        
-        # Print key frequency limits
-        f_src_max = self.f_c * (1 + 1)  # Source bandwidth edge
-        f_nyquist = self.c / (2 * min(self.dx, self.dy))
-        f_cutoff = (1 / (np.pi * self.dt)) * np.arcsin(self.c * self.dt / min(self.dx, self.dy))
-        print(f"  Source bandwidth:    ~[0, {f_src_max:.3e}] Hz  (2 * f_c)")
-        print(f"  Spatial Nyquist:     {f_nyquist:.3e} Hz  ({f_nyquist/self.f_c:.1f} * f_c)")
-        print(f"  Yee num. cutoff:     {f_cutoff:.3e} Hz  ({f_cutoff/self.f_c:.1f} * f_c)")
-        
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        idx_fc = np.argmin(np.abs(f_valid - self.f_c))
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))
-        
-        for i, (name, data) in enumerate(hd["obs_points"].items()):
-            H_sim, H_anal = data["H_sim"], data["H_analytical"]
-            
-            # Normalize both at f_c to remove constant amplitude offset from source injection
-            sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
-            anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
-            rel_error = np.abs(sim_mag - anal_mag) / anal_mag
-            
-            # Phase Error Dispersion
-            sim_phase = np.unwrap(np.angle(H_sim))
-            anal_phase = np.unwrap(np.angle(H_anal))
-            # Compute difference and pin it to 0 at the central frequency
-            phase_diff = sim_phase - anal_phase
-            phase_diff -= phase_diff[idx_fc]
-            phase_error_deg = np.rad2deg(phase_diff)
-            
-            axes[0].plot(f_valid, rel_error * 100, label=name, lw=1.5, color=colors[i])
-            axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
-            
-        # Magnitude Error Formatting
-        ax = axes[0]
-        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
-        ax.axvline(2 * self.f_c, color='red', ls=':', alpha=0.5, label=f'f_break ({2 * self.f_c:.2e} Hz)')
-        ax.axvline(self.f_c * 0.2, color='green', ls=':', alpha=0.5, label=f'f_min ({self.f_c * 0.2:.2e} Hz)')
-        ax.set_xscale('log')
-        ax.set_title('Relative Magnitude Error')
-        ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('Relative Error (%)')
-        ax.legend()
-        ax.grid(True, which='both', alpha=0.3)
-        
-        # Phase Error Formatting
-        ax = axes[1]
-        ax.axvline(self.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({self.f_c:.2e} Hz)')
-        ax.axvline(2 * self.f_c, color='red', ls=':', alpha=0.5, label=f'f_break ({2 * self.f_c:.2e} Hz)')
-        ax.axvline(self.f_c * 0.2, color='green', ls=':', alpha=0.5, label=f'f_min ({self.f_c * 0.2:.2e} Hz)')
-        ax.set_xscale('log')
-        ax.set_title('Phase Error Dispersion')
-        ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('Phase Error (Degrees)')
-        ax.legend()
-        ax.grid(True, which='both', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-
     @classmethod
-    def run_full_analysis(cls, params):
-        src_pos = params.pop('Source_loc', (50, 100))
-        obs_pos = params.pop('Obs_loc', (70, 100))
-        frame_skip = params.pop('frame_skip', 2)
-        hankel_f_min = params.pop('hankel_f_min', None)
-        hankel_f_max = params.pop('hankel_f_max', None)
-        
+    def run_plot(cls, params):
+
+        config = SimulationConfig(**params)
         t0 = time.time()
-        solver = cls(**params)
+        solver = cls(config)
         
         # Run simulation
-        ani, ez_data = solver.run_simulation(src_pos, obs_pos, frame_skip=frame_skip)
+        ez_data = solver.run_simulation()
         t1 = time.time()
         exec_time = t1 - t0
-        print(f"\n>>> [{solver.solver} solver] Execution time (Setup + Sim): {exec_time:.4f} seconds <<<\n")
+        print(f"\n>>> [{solver.cfg.solver} solver] Execution time (Setup + Sim): {exec_time:.4f} seconds <<<\n")
         
-        # Plot 1D intensity at observer
-        solver.plot_1d_intensity(solver.dt, ez_data)
-        # Verify against analytical Hankel
-        solver.verify_with_hankel(ez_data, src_pos, obs_pos, hankel_f_min, hankel_f_max)
-        solver.plot_error_analysis()
+        nodes_x = np.concatenate(([0], np.cumsum(solver.cfg.dx)))
+        nodes_y = np.concatenate(([0], np.cumsum(solver.cfg.dy)))
+        X, Y = np.meshgrid(nodes_x, nodes_y)
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        quad = ax.pcolormesh(X, Y, (ez_data[0]*config.Z_local).T, shading='auto')
+
+        def update(i):
+            frame_data = (ez_data[i]*config.Z_local).T
+            quad.set_array(frame_data.ravel())
+            return quad,
         
+        anim = FuncAnimation(fig, update, frames=len(ez_data), interval=1000*config.dt, blit=True)
+        plt.show()
+        
+
         return ez_data, exec_time
 
 
 sim_params = {
-    'Nx': 200, 
-    'Ny': 200, 
-    'Nt': 300, 
-    'lambda0': 1, 
     'CFL': 2,
-    'Source_loc' : (50,100),
     'Obs_loc' : (80,100),
     'bc': 'PBC',
     'solver': 'Schur',
-    'finesse': 30,
+    'finesse': 10,
     'frame_skip': 3,
     'hankel_f_min': 0.0,
-    'hankel_f_max': 3 * 299792458
+    'hankel_f_max': 3 * 299792458,
+    'grid_refinement': False
 }
 
-results, time_schur = FCI_TM_Solver.run_full_analysis(sim_params)
+results, time_schur = FCI_TM_Solver.run_plot(sim_params)
 
-# sim_params_2 = {
-#     'Nx': 200, 
-#     'Ny': 200, 
-#     'Nt': 300, 
-#     'lambda0': 1, 
-#     'CFL': 2,
-#     'Source_loc' : (50,100),
-#     'Obs_loc' : (80,100),
-#     'bc': 'PBC',
-#     'solver': 'default'
-# }
 
-# results_2, time_default = FCI_TM_Solver.run_full_analysis(sim_params_2)
 
-# print("\n--- Final Performance Comparison ---")
 print(f"Schur complement solver time: {time_schur:.4f} seconds")
-# print(f"Default solver time:          {time_default:.4f} seconds")
