@@ -17,7 +17,6 @@ class SimulationConfig:
     def __init__(self, **kwargs):
         self.solver_type = kwargs.get("solver_type", "yee").lower()
         if self.solver_type == "fci":
-            kwargs["grid_refinement"] = False # FCI requires structured grid
             CFL_default = 2.0
         else:
             CFL_default = 0.95
