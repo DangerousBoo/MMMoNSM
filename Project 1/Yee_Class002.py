@@ -35,14 +35,14 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = 1.5
-        self.L_wg   = f * 10 * self.lam_c # Length of the waveguide in meters
-        self.w_core = f * 3 * self.lam_c # Width of the core in meters
-        self.w_clad = f * 3 * self.lam_c # Width of the cladding on each side in meters
-        self.w_air  = f * 5 * self.lam_c # Width of the air region on each side next to the cladding in meters
-        self.d      = f * 4 * self.lam_c # Distance between source and the barrier in meters
+        self.L_wg   = f * 4 * self.lam_c # Length of the waveguide in meters
+        self.w_core = f * 2 * self.lam_c # Width of the core in meters
+        self.w_clad = f * 2 * self.lam_c # Width of the cladding on each side in meters
+        self.w_air  = f * 2.5 * self.lam_c # Width of the air region on each side next to the cladding in meters
+        self.d      = f * 2 * self.lam_c # Distance between source and the barrier in meters
         self.t_m    = f * 0.03 * self.lam_c # Thickness of the barrier infront of the waveguide
-        self.Ll     = f * 5 * self.lam_c # Length of the left region before the source in meters
-        self.Lr     = f * 2.5 * self.lam_c # Length of the right region after the waveguide in meters
+        self.Ll     = f * 2 * self.lam_c # Length of the left region before the source in meters
+        self.Lr     = f * 2 * self.lam_c # Length of the right region after the waveguide in meters
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr # Total length of the simulation domain in x direction in meters
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core) # Total width of the simulation domain in y direction in meters
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c # Total of time to capture the full pulse propagation through the waveguide
@@ -54,6 +54,7 @@ class SimulationConfig:
             setattr(self, key, value)
         
         self.wg_type = getattr(self, "wg_type", "step") # Default waveguide type is "step"
+        self.grid_refinement = getattr(self, "grid_refinement", "gradual") # Whether to use non-uniform grid refinement
 
         self.alpha = getattr(self, "alpha", 1.05)
         
@@ -118,7 +119,7 @@ class SimulationConfig:
         """Constructs the non-uniform grid in the x-direction."""
         self.dx_0 = self.lam_c / self.finesse
         
-        if not getattr(self, "grid_refinement", True):
+        if not getattr(self, "grid_refinement", "gradual"):
             self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
             self.n_d = int(np.ceil(self.d / self.dx_0))
             self.n_wg = int(np.ceil(self.L_wg / self.dx_0))
@@ -132,30 +133,42 @@ class SimulationConfig:
                 np.full(self.n_Lr, self.Lr / self.n_Lr)
             ])
             return
+        if self.grid_refinement == "gradual":    
+            self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
+            self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
+            self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
+            self.L_f_twg, self.n_f_twg = self.L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
+            self.n_wg = int(np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg)
+            self.L_f_wg_Lr, self.n_f_wg_Lr = self.L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
+            self.n_Lr = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
             
-        self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
-        self.L_f_dt, self.n_f_dt = self.L_and_n_fine(self.dx_0, self.t_m, self.alpha)
-        self.n_d = int(np.ceil(self.d / self.dx_0 - self.L_f_dt / self.dx_0)) + self.n_f_dt
-        self.L_f_twg, self.n_f_twg = self.L_and_n_fine(self.dx_0 / np.sqrt(self.eps_core), self.t_m, self.alpha)
-        self.n_wg = int(np.ceil((self.L_wg - self.L_f_twg) * np.sqrt(self.eps_core)/ self.dx_0) + self.n_f_twg)
-        self.L_f_wg_Lr, self.n_f_wg_Lr = self.L_and_n_fine(self.dx_0, self.dx_0 / np.sqrt(self.eps_core), self.alpha)
-        self.n_Lr = int(np.ceil(self.Lr / self.dx_0 - self.L_f_wg_Lr / self.dx_0)) + self.n_f_wg_Lr
-        
-        self.dx = np.concatenate([
-            np.full(self.n_Ll, self.Ll / self.n_Ll),
-            np.full(int(self.n_d - self.n_f_dt), (self.d - self.L_f_dt) / (self.n_d - self.n_f_dt)),
-            self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m,
-            self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m,
-            np.full(int(self.n_wg - self.n_f_twg), (self.L_wg - self.L_f_twg) / (self.n_wg - self.n_f_twg)),
-            self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core),
-            np.full(int(self.n_Lr - self.n_f_wg_Lr), (self.Lr - self.L_f_wg_Lr) / (self.n_Lr - self.n_f_wg_Lr))
-        ])
+            self.dx = np.concatenate([
+                np.full(self.n_Ll, self.Ll / self.n_Ll),
+                np.full(int(self.n_d - self.n_f_dt), (self.d - self.L_f_dt) / (self.n_d - self.n_f_dt)),
+                self.alpha ** np.arange(self.n_f_dt, -1, -1) * self.t_m,
+                self.alpha ** np.arange(1, self.n_f_twg + 1) * self.t_m,
+                np.full(int(self.n_wg - self.n_f_twg), (self.L_wg - self.L_f_twg) / (self.n_wg - self.n_f_twg)),
+                self.alpha ** np.arange(1, self.n_f_wg_Lr + 1) * self.dx_0 / np.sqrt(self.eps_core),
+                np.full(int(self.n_Lr - self.n_f_wg_Lr), (self.Lr - self.L_f_wg_Lr) / (self.n_Lr - self.n_f_wg_Lr))
+            ])
+        if self.grid_refinement == "step":
+            self.n_Ll = int(np.ceil(self.Ll / self.dx_0))
+            self.n_d = int(np.ceil(self.d / self.dx_0))
+            self.n_wg = int(np.ceil(self.L_wg / (self.dx_0 / np.sqrt(self.eps_core))))
+            self.n_Lr = int(np.ceil(self.Lr / self.dx_0))
+            self.dx = np.concatenate([
+                np.full(self.n_Ll, self.Ll / self.n_Ll),
+                np.full(self.n_d, self.d / self.n_d),
+                np.array([self.t_m]),
+                np.full(self.n_wg, (self.L_wg / self.n_wg)),
+                np.full(self.n_Lr, self.Lr / self.n_Lr)
+            ])
 
     def _build_dy(self):
         """Constructs the non-uniform grid in the y-direction."""
         self.dy_0 = self.lam_c / self.finesse
         
-        if not getattr(self, "grid_refinement", True):
+        if not getattr(self, "grid_refinement", "gradual"):
             self.n_air = int(np.ceil(self.w_air / self.dy_0))
             self.n_clad = int(np.ceil(self.w_clad / self.dy_0))
             self.n_core = int(np.ceil(self.w_core / self.dy_0))
@@ -167,43 +180,68 @@ class SimulationConfig:
                 np.full(self.n_air, self.w_air / self.n_air)
             ])
             return
+        if self.grid_refinement == "gradual":    
+            self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
+            self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
             
-        self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
-        self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
-        
-        if self.wg_type == "step":
+            if self.wg_type == "step":
+                self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
+                self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
+                dy_mid = [
+                    np.full(self.n_clad, self.w_clad / self.n_clad),
+                    np.full(self.n_core, self.w_core / self.n_core),
+                    np.full(self.n_clad, self.w_clad / self.n_clad)
+                ]
+            else:
+                self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
+                if self.eps_core != self.eps_clad:
+                    self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / (self.w_core / 2) ** 2
+                    self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / (self.w_core / 2) ** 4
+                    self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * 2 + 4 * self.b_eps ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+                else:
+                    self.dy_core = self.dy_0 / np.sqrt(self.eps_core)
+                
+                self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
+                self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
+                self.n_core = int(np.ceil(self.w_core / self.dy_core))
+                
+                dy_mid = [
+                    np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc)),
+                    self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core,
+                    np.full(self.n_core, self.w_core / self.n_core),
+                    self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core,
+                    np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))
+                ]
+                
+            self.dy = np.concatenate([
+                np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac)),
+                self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
+                *dy_mid,
+                self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
+                np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac))
+            ])
+        if self.grid_refinement == "step":
+            self.n_air = int(np.ceil(self.w_air / self.dy_0))
             self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
-            self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
-            dy_mid = [
+            if self.wg_type == "step":
+                self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
+            else:
+                self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
+                if self.eps_core != self.eps_clad:
+                    self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / (self.w_core / 2) ** 2
+                    self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / (self.w_core / 2) ** 4
+                    self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * 2 + 4 * self.b_eps ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+                else:
+                    self.dy_core = self.dy_0 / np.sqrt(self.eps_core)
+                self.n_core = int(np.ceil(self.w_core / self.dy_core))
+                
+            self.dy = np.concatenate([
+                np.full(self.n_air, self.w_air / self.n_air),
                 np.full(self.n_clad, self.w_clad / self.n_clad),
                 np.full(self.n_core, self.w_core / self.n_core),
-                np.full(self.n_clad, self.w_clad / self.n_clad)
-            ]
-        else:
-            self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
-            self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
-            self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
-            self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core))
-            
-            self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
-            self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
-            self.n_core = int(np.ceil(self.w_core / self.dy_core))
-            
-            dy_mid = [
-                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc)),
-                self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core,
-                np.full(self.n_core, self.w_core / self.n_core),
-                self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core,
-                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))
-            ]
-            
-        self.dy = np.concatenate([
-            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac)),
-            self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
-            *dy_mid,
-            self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
-            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac))
-        ])
+                np.full(self.n_clad, self.w_clad / self.n_clad),
+                np.full(self.n_air, self.w_air / self.n_air)
+            ])
         
     def L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
         if self.eps_clad == self.eps_core:
@@ -690,7 +728,7 @@ class SimulationRunner:
         cls.plot_1d_intensity(data, fps=fps)
         
         cfg = data["config"]
-        if getattr(cfg, "grid_refinement", True):
+        if getattr(cfg, "grid_refinement", "gradual"):
             cls.plot_grid_spacing(data)
             cls.plot_mesh(data)
         
@@ -711,14 +749,14 @@ if __name__ == "__main__":
     
     # Example 1: Full materials simulation, with grid refinement:
     results = SimulationRunner.run_full_analysis(
-        wg_type = "step",
+        wg_type = "grin",
         frame_skip = 5, 
-        finesse = 10, 
+        finesse = 20, 
         eps_core = 2.22**2, 
         eps_clad = 2.218**2, 
-        free_space_sim = False, 
-        grid_refinement = True, 
-        do_hankel = False
+        free_space_sim = True, 
+        grid_refinement = "step", # "gradual", "step" or False
+        do_hankel = True
     )
     
     # # Free space sim to verify with Hankel

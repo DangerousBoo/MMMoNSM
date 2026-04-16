@@ -392,7 +392,7 @@ class IVCharacteristic:
                 I_mode = (2 * e / h) * np.trapezoid(T_int * (f_L - f_R), E_int)
                 total_current += I_mode
                 
-        return total_current
+        return -total_current
 
     @staticmethod
     def plot_IV(V_dc_arr, base_kwargs):
@@ -403,7 +403,8 @@ class IVCharacteristic:
             currents = list(tqdm(executor.map(func, V_dc_arr), total=len(V_dc_arr), desc="Extracting IV Curve"))
             
         plt.figure(figsize=(7, 4))
-        plt.plot(V_dc_arr, currents, 'r-o', lw=2)
+        plt.semilogy(V_dc_arr, currents, 'r-o', lw=2)
+        # plt.plot(V_dc_arr, currents, 'r-o', lw=2)
         plt.title("Resonant Tunneling Diode I-V Characteristic")
         plt.xlabel("$V_{DC}$ (V)")
         plt.ylabel("Current (A)")
@@ -422,9 +423,9 @@ if __name__ == '__main__':
     
     # 2. Extract I-V Curve showing Negative Differential Resistance
     # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    voltages = np.linspace(0, 0.05, 30)
+    voltages = np.linspace(0, 0.05, 100)
     base_sim_kwargs = {
-        "V0": 0.6, "T_total": 3000.0e-15, 
+        "V0": 0.6, "T_total": 10000.0e-15, 
         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
         "frame_skip": 1000 # Only doing integration, not viewing animation
     }
