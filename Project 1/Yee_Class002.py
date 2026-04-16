@@ -181,9 +181,12 @@ class SimulationConfig:
             ]
         else:
             self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
-            self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
-            self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
-            self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+            if eps_core != eps_clad:
+                self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
+                self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
+                self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+            else:
+                self.dy_core = self.dy_0 / np.sqrt(self.eps_core)
             
             self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
             self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
