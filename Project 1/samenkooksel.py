@@ -38,15 +38,15 @@ class SimulationConfig:
         self.f_break = 2 * self.f_c
         
         # Dimensions expressed in amount of wavelengths
-        f = 1.5
-        self.L_wg   = f * 10 * self.lam_c
-        self.w_core = f * 3 * self.lam_c
-        self.w_clad = f * 3 * self.lam_c
-        self.w_air  = f * 2.5 * self.lam_c
-        self.d      = f * 4 * self.lam_c
+        f = 1
+        self.L_wg   = f * 3 * self.lam_c
+        self.w_core = f * 2 * self.lam_c
+        self.w_clad = f * 2 * self.lam_c
+        self.w_air  = f * 2 * self.lam_c
+        self.d      = f * 2 * self.lam_c
         self.t_m    = f * 0.03 * self.lam_c
-        self.Ll     = f * 5 * self.lam_c
-        self.Lr     = f * 2.5 * self.lam_c
+        self.Ll     = f * 2 * self.lam_c
+        self.Lr     = f * 2 * self.lam_c
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core)
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
@@ -604,15 +604,20 @@ class SimulationRunner:
         else:
             print("Initializing standard Yee Solver...")
             solver = YeeSolver(config)
+        
+        recorders = getattr(config, "recorders", ["all"])
             
         n_frames = int(np.ceil(config.nt / frame_skip))
         field_history = np.zeros((n_frames, config.nx, config.ny), dtype=np.float32)
         recorder_plane = np.zeros((n_frames, config.ny), dtype=np.float32)
         recorder_full = np.zeros((config.nt, config.ny), dtype=np.float32)
         
-        rec_diag = np.zeros(config.nt, dtype=np.float32)
-        rec_after = np.zeros(config.nt, dtype=np.float32)
-        rec_before = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "diag" in recorders:
+            rec_diag = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "after" in recorders:
+            rec_after = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "before" in recorders:
+            rec_before = np.zeros(config.nt, dtype=np.float32)
         
         frame_idx = 0
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt}, solver={config.solver_type})"):
@@ -620,27 +625,38 @@ class SimulationRunner:
             solver.step(t)
             
             recorder_full[it, :] = solver.Ez[config.x1, :]
-            rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
-            rec_after[it] = solver.Ez[config.x_after, config.y_after]
-            rec_before[it] = solver.Ez[config.x_before, config.y_before]
+            
+            if "all" in recorders or "diag" in recorders:
+                rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
+            if "all" in recorders or "after" in recorders:
+                rec_after[it] = solver.Ez[config.x_after, config.y_after]
+            if "all" in recorders or "before" in recorders:
+                rec_before[it] = solver.Ez[config.x_before, config.y_before]
             
             if it % frame_skip == 0 and frame_idx < n_frames:
                 field_history[frame_idx] = solver.Ez
                 recorder_plane[frame_idx, :] = solver.Ez[config.x1, :]
                 frame_idx += 1
-            
-        return {
-            "config": config,
-            "history": field_history,
-            "recorder": recorder_plane,
-            "recorder_full": recorder_full,
-            "rec_diag": rec_diag,
-            "rec_after": rec_after,
-            "rec_before": rec_before,
-            "frame_skip": frame_skip,
-            "times": np.arange(config.nt) * config.dt,
-            "z_norm": getattr(solver, 'Z_local', config.Z_local) # Fetch Z_local safely depending on solver setup
-        }
+        result = {
+                "config": config,
+                "history": field_history,
+                "recorder": recorder_plane,
+                "recorder_full": recorder_full,
+                "frame_skip": frame_skip,
+                "times": np.arange(config.nt) * config.dt,
+                "z_norm": getattr(solver, 'Z_local', config.Z_local)
+            }
+
+        if "all" in recorders or "diag" in recorders:
+            result["rec_diag"] = rec_diag
+
+        if "all" in recorders or "after" in recorders:
+            result["rec_after"] = rec_after
+
+        if "all" in recorders or "before" in recorders:
+            result["rec_before"] = rec_before
+
+        return result
 
 # ==============================================================================
 # 4. Simulation Analyzer
@@ -655,7 +671,7 @@ class SimulationAnalyzer:
         t = np.arange(cfg.nt) * cfg.dt
         n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))
         freqs = fftfreq(n_pad, cfg.dt)
-        f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0.2)
+        f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0)
         f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 3.0)
         band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
         f_valid = freqs[band_idx]
@@ -686,10 +702,15 @@ class SimulationAnalyzer:
                 "r": r, "H_sim": H_sim_corrected, "H_analytical": H_analytical
             }
 
+        recorders = getattr(cfg, "recorders", ["all"])
+
         process_point("Recorder Full", results["recorder_full"][:, cfg.y1], cfg.x1, cfg.y1)
-        process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
-        process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
-        process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
+        if "all" in recorders or "diag" in recorders:
+            process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
+        if "all" in recorders or "after" in recorders:
+            process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
+        if "all" in recorders or "before" in recorders:
+            process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
@@ -740,14 +761,26 @@ class SimulationAnalyzer:
         idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
         colors = plt.cm.tab10(np.linspace(0, 1, 10))
         
+        max_val = 0
+        max_phase_error = 0
+        min_phase_error = 0
+        
         for i, (name, data) in enumerate(hd["obs_points"].items()):
             H_sim, H_anal = data["H_sim"], data["H_analytical"]
             sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
             anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
             rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+            
+            mask = (f_valid > cfg.f_min) & (f_valid < cfg.f_break)
+            max_val = np.max([max_val, np.max(rel_error[mask])])
+            print(max_val)
+            
             phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
             phase_diff -= phase_diff[idx_fc]
             phase_error_deg = np.rad2deg(phase_diff)
+            
+            min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
+            max_phase_error = np.max([max_phase_error, np.max(phase_error_deg[mask])])
             
             axes[0].plot(f_valid, rel_error * 100, label=name, lw=1.5, color=colors[i])
             axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
@@ -763,11 +796,12 @@ class SimulationAnalyzer:
         axes[0].set_title(f'Relative Magnitude Error [{cfg.solver_type.upper()}]')
         axes[0].set_xlabel('Frequency (Hz)')
         axes[0].set_ylabel('Relative Error (%)')
-        
+        axes[0].set_ylim(0, 300 * max_val)
         axes[1].set_title(f'Phase Error Dispersion [{cfg.solver_type.upper()}]')
         axes[1].set_xlabel('Frequency (Hz)')
         axes[1].set_ylabel('Phase Error (Degrees)')
-        
+        axes[1].set_ylim(1.5 * min_phase_error, 1.5 * max_phase_error)
+
         plt.tight_layout()
         plt.show()
 
@@ -784,12 +818,18 @@ class SimulationAnalyzer:
         
         z_norm = np.array(results["z_norm"]) # Using fetched z_norm
         quad = ax.pcolormesh(X, Y, (hist[0] * z_norm).T, shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4, zorder=1)
-                             
+                 
+        recorders = getattr(cfg, "recorders", ["all"])         
+                    
         scat1 = ax.scatter(nodes_x[cfg.x0], nodes_y[cfg.y0], color='red', s=20, zorder=2, label='Source')
         scat2 = ax.scatter(nodes_x[cfg.x1], nodes_y[cfg.y1], color='green', s=20, zorder=2, label='Recorder')
-        scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
-        scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
-        scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
+        
+        if "all" in recorders or "diag" in recorders:
+            scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
+        if "all" in recorders or "after" in recorders:
+            scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
+        if "all" in recorders or "before" in recorders:
+            scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
         
         ax.legend(loc='upper right', fontsize=8)
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
@@ -799,7 +839,18 @@ class SimulationAnalyzer:
             frame_data = (hist[i] * z_norm).T
             quad.set_array(frame_data.ravel())
             time_text.set_text(f'Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
-            return quad, time_text, scat1, scat2, scat3, scat4, scat5
+            out = [quad, time_text, scat1, scat2]
+
+            if "all" in recorders or "diag" in recorders:
+                out.append(scat3)
+
+            if "all" in recorders or "after" in recorders:
+                out.append(scat4)
+
+            if "all" in recorders or "before" in recorders:
+                out.append(scat5)
+
+            return tuple(out)
 
         interval_ms = max(1, int(1000 / fps))
         ani = FuncAnimation(fig, update, frames=len(hist), interval=interval_ms, blit=True)
@@ -831,14 +882,16 @@ if __name__ == "__main__":
     res_yee = SimulationRunner.execute(
         solver_type="yee",
         frame_skip=10,
-        finesse=5,
+        finesse=20,
         free_space_sim=True,
         do_hankel=True,
+        recorders=["after"]
     )
     t1 = time.time()
     print(f"YEE executed in {t1-t0:.2f} seconds.")
-
-    # SimulationAnalyzer.verify_with_hankel(res_yee)
-    # SimulationAnalyzer.plot_error_analysis(res_yee)
+    
     SimulationAnalyzer.plot_2d_animation(res_yee)
+    SimulationAnalyzer.verify_with_hankel(res_yee)
+    SimulationAnalyzer.plot_error_analysis(res_yee)
+    
 
