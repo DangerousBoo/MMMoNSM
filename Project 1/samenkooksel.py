@@ -16,7 +16,11 @@ class SimulationConfig:
         
     def __init__(self, **kwargs):
         self.solver_type = kwargs.get("solver_type", "yee").lower()
-    
+
+        # FCI settings specifically
+        self.fci_bc = kwargs.get("bc", "PBC").upper()
+        self.fci_solver = kwargs.get("fci_solver", "Schur")
+        
         # Physical Constants
         self.c          = 299792458
         self.epsilon0   = 8.854e-12
@@ -65,8 +69,12 @@ class SimulationConfig:
         self._build_dx()
         self._build_dy()
         
-        self.nx = len(self.dx) + 1
-        self.ny = len(self.dy) + 1
+        if self.fci_bc == "PBC" and self.solver_type == "fci":
+            self.nx = len(self.dx)
+            self.ny = len(self.dy)
+        else:
+            self.nx = len(self.dx) + 1
+            self.ny = len(self.dy) + 1
         
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
@@ -109,10 +117,7 @@ class SimulationConfig:
         
         self.v_local = self.c / np.sqrt(self.epsilon_r)
         self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
-        
-        # FCI settings specifically
-        self.fci_bc = getattr(self, "bc", "PBC").upper()
-        self.fci_solver = getattr(self, "fci_solver", "Schur")
+
 
     def _build_dx(self):
         self.dx_0 = self.lam_c / self.finesse
@@ -373,18 +378,24 @@ class FCISolver:
         if self.cfg.fci_bc == 'PBC':
             self.nx_n = self.cfg.nx
             self.ny_n = self.cfg.ny
-            self.cfg.dx = np.append(self.cfg.dx, [self.cfg.dx_0, self.cfg.dx_0])
-            self.cfg.dy = np.append(self.cfg.dy, [self.cfg.dy_0, self.cfg.dy_0])
+            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
+            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
+            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
+            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
         else:
             self.nx_n = self.cfg.nx + 1
             self.ny_n = self.cfg.ny + 1
-            self.cfg.dx = np.append(self.cfg.dx, [self.cfg.dx_0, self.cfg.dx_0])
-            self.cfg.dy = np.append(self.cfg.dy, [self.cfg.dy_0, self.cfg.dy_0])
+            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
+            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
+  
         
 
         self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
         self.cfg.gamma = 0.0
         self.cfg.epsilon_r  = np.ones((self.nx_n, self.ny_n))
+
+        self.cfg.v_local = self.cfg.c / np.sqrt(self.cfg.epsilon_r)
+        self.cfg.Z_local = self.cfg.Z0 / np.sqrt(self.cfg.epsilon_r)
 
         self.len_hx = self.nx_n * self.cfg.ny
         self.len_hy = self.cfg.nx * self.ny_n
@@ -392,7 +403,7 @@ class FCISolver:
         
         # Hx & Hx_dot + Hy & Hy_dot + Ez & Ez_dot & Ez_ddot & Jz:
         self.total_len = 2 * self.len_hx + 2 * self.len_hy + 4 * self.len_ez
-        ez_start = 2*self.len_hx + 2*self.len_hy
+        ez_start = 2 * self.len_hx + 2 * self.len_hy
         self.idx_ez = slice(ez_start, ez_start + self.len_ez)
         
         self.u = np.zeros(self.total_len)
@@ -404,8 +415,8 @@ class FCISolver:
         self.sx = np.zeros((self.nx_n,self.ny_n))
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
-        p, m = int(1 * self.cfg.finesse), 4
-        k_max = 2
+        p, m = int(2.0 * self.cfg.finesse), 4
+        k_max = 1.0
         s_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
 
         for i in range(p):
@@ -502,7 +513,7 @@ class FCISolver:
         L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
         L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
         L71 = DY_hx_to_ez;      L73 = -DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
-        L87 = to_diag_vec(-self.cfg.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
+        L87 = to_diag_vec(-self.cfg.sigma.flatten());   L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
@@ -524,7 +535,7 @@ class FCISolver:
         R55 = to_diag_vec(bym);                         R56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
         R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
         R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
-        R87 = to_diag_vec(self.cfg.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
+        R87 = to_diag_vec(self.cfg.sigma.flatten());    R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
 
         # Assemble RHS Block Matrix
         self.RHS = sp.bmat([
@@ -579,17 +590,34 @@ class FCISolver:
             self.solve_func = solve_schur
 
     def step(self, t):
+        # 1. 
         b = self.RHS.dot(self.u)
-        
-        offset = 2 * self.len_hx + 2 * self.len_hy
-        src_idx = offset + self.cfg.x0 * self.ny_n + self.cfg.y0
-        
-        src_val = self.cfg.A * np.cos(2 * np.pi * self.cfg.f_c * (t - self.cfg.t0)) * \
-                  np.exp(-0.5 * ((t - self.cfg.t0) / self.cfg.sig_t)**2)
-        b[src_idx] -= src_val
-        
         self.u = self.solve_func(b)
         self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
+        
+        # 2. 
+        src_val = self.cfg.A * np.cos(2 * np.pi * self.cfg.f_c * (t - self.cfg.t0)) * \
+                  np.exp(-0.5 * ((t - self.cfg.t0) / self.cfg.sig_t)**2)
+                  
+        # 3. Match YEE's exact amplitude scaling
+        v = self.cfg.v_local[self.cfg.x0, self.cfg.y0]
+        dx = self.cfg.dx[self.cfg.x0]
+        dy = self.cfg.dy[self.cfg.y0]
+        coef_p = 1.0 / (v * self.cfg.dt) + self.cfg.Z_local[self.cfg.x0, self.cfg.y0] * self.cfg.sigma[self.cfg.x0, self.cfg.y0] / (2.0 * self.ap)
+        
+        scaled_src = src_val * (dx * dy) / coef_p
+        
+        # 4. Spatially distribute
+        weights = [
+            (-1, -1, 1/16), (0, -1, 1/8), (1, -1, 1/16),
+            (-1,  0, 1/8),  (0,  0, 1/4), (1,  0, 1/8),
+            (-1,  1, 1/16), (0,  1, 1/8), (1,  1, 1/16)
+        ]
+        
+        for i, j, w in weights:
+            self.Ez[self.cfg.x0 + i, self.cfg.y0 + j] -= scaled_src * w
+            
+        self.u[self.idx_ez] = self.Ez.flatten()
 
 # ==============================================================================
 # 3. Simulation Runner
@@ -783,7 +811,10 @@ class SimulationAnalyzer:
         ax.set_facecolor('black')
         
         z_norm = np.array(results["z_norm"]) # Using fetched z_norm
-        quad = ax.pcolormesh(X, Y, (hist[0] * z_norm).T, shading='nearest', cmap='RdBu_r', vmin=-1e-4, vmax=1e-4, zorder=1)
+        vmax = np.max(np.abs(hist * z_norm)) * 0.8
+        if vmax == 0:
+            vmax = 1e-4
+        quad = ax.pcolormesh(X, Y, (hist[0] * z_norm).T, shading='nearest', cmap='RdBu_r', vmin=-vmax, vmax=vmax, zorder=1)
                              
         scat1 = ax.scatter(nodes_x[cfg.x0], nodes_y[cfg.y0], color='red', s=20, zorder=2, label='Source')
         scat2 = ax.scatter(nodes_x[cfg.x1], nodes_y[cfg.y1], color='green', s=20, zorder=2, label='Recorder')
@@ -807,6 +838,22 @@ class SimulationAnalyzer:
         ax.set_title(f"Field Animation ({cfg.solver_type.upper()})")
         plt.show()
 
+    @staticmethod
+    def compare_recorders(*results_list):
+        fig, ax = plt.subplots(figsize=(10, 4))
+        for res in results_list:
+            cfg = res["config"]
+            t = res["times"]
+            ez = res["recorder_full"][:, cfg.y1]
+            ax.plot(t * 1e9, ez, label=cfg.solver_type.upper(), lw=1.5)
+        ax.set_xlabel("Time (ns)")
+        ax.set_ylabel("Ez Amplitude")
+        ax.set_title("Recorder Comparison")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
 # ==============================================================================
 # Execution Example
 # ==============================================================================
@@ -815,7 +862,7 @@ if __name__ == "__main__":
     res_fci = SimulationRunner.execute(
         solver_type = "fci",
         frame_skip = 10,
-        finesse = 5,
+        finesse = 9,
         free_space_sim = True,
         grid_refinement = False,
         do_hankel = True,
@@ -831,7 +878,7 @@ if __name__ == "__main__":
     res_yee = SimulationRunner.execute(
         solver_type="yee",
         frame_skip=10,
-        finesse=5,
+        finesse=9,
         free_space_sim=True,
         do_hankel=True,
     )
@@ -841,4 +888,6 @@ if __name__ == "__main__":
     # SimulationAnalyzer.verify_with_hankel(res_yee)
     # SimulationAnalyzer.plot_error_analysis(res_yee)
     SimulationAnalyzer.plot_2d_animation(res_yee)
+
+    SimulationAnalyzer.compare_recorders(res_fci, res_yee)
 
