@@ -105,7 +105,7 @@ class SimulationConfig:
         self.Z_local = self.Z0 / np.sqrt(self.epsilon_r)
         
         # FCI settings specifically
-        self.fci_bc = getattr(self, "bc", "PEC").upper()
+        self.fci_bc = getattr(self, "bc", "PBC").upper()
         self.fci_solver = getattr(self, "fci_solver", "Schur")
 
     def _build_dx(self):
@@ -367,13 +367,13 @@ class FCISolver:
         if self.cfg.fci_bc == 'PBC':
             self.nx_n = self.cfg.nx
             self.ny_n = self.cfg.ny
-            self.cfg.dx = np.append(self.cfg.dx, self.cfg.dx_0)
-            self.cfg.dy = np.append(self.cfg.dy, self.cfg.dy_0)
+            self.cfg.dx = np.append(self.cfg.dx, [self.cfg.dx_0, self.cfg.dx_0])
+            self.cfg.dy = np.append(self.cfg.dy, [self.cfg.dy_0, self.cfg.dy_0])
         else:
             self.nx_n = self.cfg.nx + 1
             self.ny_n = self.cfg.ny + 1
-            self.cfg.dx = np.append(self.cfg.dx, self.cfg.dx_0)
-            self.cfg.dy = np.append(self.cfg.dy, self.cfg.dy_0)
+            self.cfg.dx = np.append(self.cfg.dx, [self.cfg.dx_0, self.cfg.dx_0])
+            self.cfg.dy = np.append(self.cfg.dy, [self.cfg.dy_0, self.cfg.dy_0])
         
 
         self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
@@ -389,6 +389,7 @@ class FCISolver:
         ez_start = 2*self.len_hx + 2*self.len_hy
         self.idx_ez = slice(ez_start, ez_start + self.len_ez)
         
+        self.u = np.zeros(self.total_len)
         self._build_system()
 
     def _get_pml_profiles(self):
@@ -430,8 +431,8 @@ class FCISolver:
             Ix = sp.eye(n + 1, format='csr')
 
             Dx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0))
-            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
-            Dtx[n, n-1] = - 1 / d
+            Dtx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1))
+            Dtx[n, n-1] = - 1 / d[-1]
 
             A1 = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
             A2 = sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
@@ -531,11 +532,11 @@ class FCISolver:
             [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
-        if self.cfg.solver == "default":
+        if self.cfg.fci_solver == "default":
             print("Pre-factoring the 8x8 system...")
             self.solve_func = spla.factorized(self.LHS.tocsc())
 
-        elif self.cfg.solver == "Schur":
+        elif self.cfg.fci_solver == "Schur":
             print("Pre-factoring the 8x8 system using Schur complement...")
 
             M11 = self.LHS[:2*self.len_hx + 2*self.len_hy, :2*self.len_hx + 2*self.len_hy].tocsc()
