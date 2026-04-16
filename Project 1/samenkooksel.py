@@ -169,43 +169,71 @@ class SimulationConfig:
                 np.full(self.n_air, self.w_air / self.n_air)
             ])
             return
-            
-        self.L_f_ac, self.n_f_ac = self._L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
-        self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
         
-        if self.wg_type == "step":
+        if self.grid_refinement == "gradual":    
+            self.L_f_ac, self.n_f_ac = self.L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
+            self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
+            
+            if self.wg_type == "step":
+                self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
+                self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
+                dy_mid = [
+                    np.full(self.n_clad, self.w_clad / self.n_clad),
+                    np.full(self.n_core, self.w_core / self.n_core),
+                    np.full(self.n_clad, self.w_clad / self.n_clad)
+                ]
+            else:
+                self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
+                if self.eps_core != self.eps_clad:
+                    self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / (self.w_core / 2) ** 2
+                    self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / (self.w_core / 2) ** 4
+                    self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * 2 + 4 * self.b_eps ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+                else:
+                    self.dy_core = self.dy_0 / np.sqrt(self.eps_core)
+                
+                self.L_f_cc, self.n_f_cc = self.L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
+                self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
+                self.n_core = int(np.ceil(self.w_core / self.dy_core))
+                
+                dy_mid = [
+                    np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc)),
+                    self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core,
+                    np.full(self.n_core, self.w_core / self.n_core),
+                    self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core,
+                    np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))
+                ]
+                
+            self.dy = np.concatenate([
+                np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac)),
+                self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
+                *dy_mid,
+                self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
+                np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac))
+            ])
+
+        if self.grid_refinement == "step":
+            self.n_air = int(np.ceil(self.w_air / self.dy_0))
             self.n_clad = int(np.ceil(self.w_clad / self.dy_0 * np.sqrt(self.eps_clad)))
-            self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
-            dy_mid = [
+
+            if self.wg_type == "step":
+                self.n_core = int(np.ceil(self.w_core / self.dy_0 * np.sqrt(self.eps_core)))
+            else:
+                self.deps_max = 0.01 # percentage of (self.eps_core - self.eps_clad)
+                if self.eps_core != self.eps_clad:
+                    self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / (self.w_core / 2) ** 2
+                    self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / (self.w_core / 2) ** 4
+                    self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * 2 + 4 * self.b_eps ** 3)), self.dy_0 / np.sqrt(self.eps_core))
+                else:
+                    self.dy_core = self.dy_0 / np.sqrt(self.eps_core)
+                self.n_core = int(np.ceil(self.w_core / self.dy_core))
+                
+            self.dy = np.concatenate([
+                np.full(self.n_air, self.w_air / self.n_air),
                 np.full(self.n_clad, self.w_clad / self.n_clad),
                 np.full(self.n_core, self.w_core / self.n_core),
-                np.full(self.n_clad, self.w_clad / self.n_clad)
-            ]
-        else:
-            self.deps_max = 0.01
-            self.a_eps = 2 * np.sqrt(self.eps_core) * (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) / self.w_core ** 2
-            self.b_eps = (np.sqrt(self.eps_clad) - np.sqrt(self.eps_core)) ** 2 / self.w_core ** 4
-            self.dy_core = min(np.abs(self.deps_max * (self.eps_core-self.eps_clad) / (self.a_eps * self.w_core + 1/2 * self.b_eps * self.w_core ** 3)), self.dy_0 / np.sqrt(self.eps_core))
-            
-            self.L_f_cc, self.n_f_cc = self._L_and_n_fine(self.dy_0 / np.sqrt(self.eps_clad), self.dy_core, self.alpha)
-            self.n_clad = int(np.ceil((self.w_clad - self.L_f_cc) / self.dy_0 * np.sqrt(self.eps_clad))) + self.n_f_cc
-            self.n_core = int(np.ceil(self.w_core / self.dy_core))
-            
-            dy_mid = [
-                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc)),
-                self.alpha ** np.arange(self.n_f_cc, 0, -1) * self.dy_core,
-                np.full(self.n_core, self.w_core / self.n_core),
-                self.alpha ** np.arange(1, self.n_f_cc + 1) * self.dy_core,
-                np.full(self.n_clad - self.n_f_cc, (self.w_clad - self.L_f_cc) / (self.n_clad - self.n_f_cc))
-            ]
-            
-        self.dy = np.concatenate([
-            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac)),
-            self.alpha ** np.arange(self.n_f_ac, 0, -1) * self.dy_0 / np.sqrt(self.eps_clad),
-            *dy_mid,
-            self.alpha ** np.arange(1, self.n_f_ac + 1) * self.dy_0 / np.sqrt(self.eps_clad),
-            np.full(int(self.n_air - self.n_f_ac), (self.w_air - self.L_f_ac) / (self.n_air - self.n_f_ac))
-        ])
+                np.full(self.n_clad, self.w_clad / self.n_clad),
+                np.full(self.n_air, self.w_air / self.n_air)
+            ])
         
     def _L_and_n_fine(self, d_coarse, d_fine, alpha = np.sqrt(2)):
         if self.eps_clad == self.eps_core:
@@ -509,8 +537,7 @@ class FCISolver:
 
         elif self.cfg.solver == "Schur":
             print("Pre-factoring the 8x8 system using Schur complement...")
-            
-            # Extract blocks
+
             M11 = self.LHS[:2*self.len_hx + 2*self.len_hy, :2*self.len_hx + 2*self.len_hy].tocsc()
             M12 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:].tocsc()
             M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
@@ -533,19 +560,13 @@ class FCISolver:
             S = M22 - M21 @ M11_inv @ M12
             S_fact = spla.factorized(S.tocsc())
 
-            # Define the solver function
             def solve_schur(b):
-                # Split b into b1 and b2
                 b1 = b[:2*self.len_hx + 2*self.len_hy]
                 b2 = b[2*self.len_hx + 2*self.len_hy:]
 
-                # Solve for u2 = S_inv* (b2 - M21 * M11_inv * b1)
                 u2 = S_fact(b2 - M21 @ M11_inv @ b1)
-
-                # Solve for u1 = M11_inv * (b1 - M12 * u2)
                 u1 = M11_inv @ (b1 - M12 @ u2)
 
-                # Combine to get full solution
                 return np.concatenate([u1, u2])
 
             self.solve_func = solve_schur
@@ -787,7 +808,7 @@ if __name__ == "__main__":
     res_fci = SimulationRunner.execute(
         solver_type="fci",
         frame_skip=10,
-        finesse=10,
+        finesse=15,
         free_space_sim=True,
         do_hankel=True,
     )
@@ -802,7 +823,7 @@ if __name__ == "__main__":
     res_yee = SimulationRunner.execute(
         solver_type="yee",
         frame_skip=10,
-        finesse=10,
+        finesse=15,
         free_space_sim=True,
         do_hankel=True,
     )
