@@ -650,8 +650,8 @@ class SimulationAnalyzer:
     def verify_with_hankel(results):
         print("\n--- Plotting Hankel verification ---")
         cfg = results["config"]
-        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
-        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))[:cfg.nx]
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))[:cfg.ny]
         t = np.arange(cfg.nt) * cfg.dt
         n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))
         freqs = fftfreq(n_pad, cfg.dt)
@@ -775,8 +775,8 @@ class SimulationAnalyzer:
     def plot_2d_animation(results, fps=40):
         cfg = results["config"]
         hist = results["history"]
-        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))
-        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))
+        nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))[:cfg.nx]
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))[:cfg.ny]
         X, Y = np.meshgrid(nodes_x, nodes_y)
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.set_aspect('equal')
@@ -813,11 +813,12 @@ class SimulationAnalyzer:
 if __name__ == "__main__":
     t0 = time.time()
     res_fci = SimulationRunner.execute(
-        solver_type="fci",
-        frame_skip=10,
-        finesse=15,
-        free_space_sim=True,
-        do_hankel=True,
+        solver_type = "fci",
+        frame_skip = 10,
+        finesse = 5,
+        free_space_sim = True,
+        grid_refinement = False,
+        do_hankel = True,
     )
     t1 = time.time()
     print(f"FCI executed in {t1-t0:.2f} seconds.")
@@ -830,7 +831,7 @@ if __name__ == "__main__":
     res_yee = SimulationRunner.execute(
         solver_type="yee",
         frame_skip=10,
-        finesse=15,
+        finesse=5,
         free_space_sim=True,
         do_hankel=True,
     )
