@@ -43,13 +43,13 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = 1
-        self.L_wg   = f * 3 * self.lam_c
-        self.w_core = f * 2 * self.lam_c
+        self.L_wg   = f * 7 * self.lam_c
+        self.w_core = f * 4 * self.lam_c
         self.w_clad = f * 2 * self.lam_c
         self.w_air  = f * 2 * self.lam_c
-        self.d      = f * 2 * self.lam_c
+        self.d      = f * 4 * self.lam_c
         self.t_m    = f * 0.03 * self.lam_c
-        self.Ll     = f * 2 * self.lam_c
+        self.Ll     = f * 5 * self.lam_c
         self.Lr     = f * 2 * self.lam_c
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core)
@@ -104,7 +104,7 @@ class SimulationConfig:
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
         
         if self.solver_type == "fci":
-            CFL_default = 2.0
+            CFL_default = 1.0
         else:
             CFL_default = 0.95
 
@@ -590,34 +590,18 @@ class FCISolver:
             self.solve_func = solve_schur
 
     def step(self, t):
-        # 1. 
         b = self.RHS.dot(self.u)
-        self.u = self.solve_func(b)
-        self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
-        
-        # 2. 
+
         src_val = self.cfg.A * np.cos(2 * np.pi * self.cfg.f_c * (t - self.cfg.t0)) * \
                   np.exp(-0.5 * ((t - self.cfg.t0) / self.cfg.sig_t)**2)
-                  
-        # 3. Match YEE's exact amplitude scaling
-        v = self.cfg.v_local[self.cfg.x0, self.cfg.y0]
+
         dx = self.cfg.dx[self.cfg.x0]
         dy = self.cfg.dy[self.cfg.y0]
-        coef_p = 1.0 / (v * self.cfg.dt) + self.cfg.Z_local[self.cfg.x0, self.cfg.y0] * self.cfg.sigma[self.cfg.x0, self.cfg.y0] / (2.0 * self.ap)
-        
-        scaled_src = src_val * (dx * dy) / coef_p
-        
-        # 4. Spatially distribute
-        weights = [
-            (-1, -1, 1/16), (0, -1, 1/8), (1, -1, 1/16),
-            (-1,  0, 1/8),  (0,  0, 1/4), (1,  0, 1/8),
-            (-1,  1, 1/16), (0,  1, 1/8), (1,  1, 1/16)
-        ]
-        
-        for i, j, w in weights:
-            self.Ez[self.cfg.x0 + i, self.cfg.y0 + j] -= scaled_src * w
-            
-        self.u[self.idx_ez] = self.Ez.flatten()
+        src_idx = self.idx_ez.start + self.cfg.x0 * self.ny_n + self.cfg.y0
+        b[src_idx] -= src_val * dx * dy
+
+        self.u = self.solve_func(b)
+        self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
 
 # ==============================================================================
 # 3. Simulation Runner
@@ -912,8 +896,8 @@ if __name__ == "__main__":
     t0 = time.time()
     res_fci = SimulationRunner.execute(
         solver_type = "fci",
-        frame_skip = 10,
-        finesse = 9,
+        frame_skip = 2,
+        finesse = 15,
         free_space_sim = True,
         grid_refinement = False,
         do_hankel = True,
@@ -929,7 +913,7 @@ if __name__ == "__main__":
     res_yee = SimulationRunner.execute(
         solver_type="yee",
         frame_skip=10,
-        finesse=9,
+        finesse=15,
         free_space_sim=True,
         do_hankel=True,
         recorders=["after"]
