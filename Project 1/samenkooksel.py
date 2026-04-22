@@ -43,18 +43,19 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = 1.5
-        self.L_wg   = f * 8 * self.lam_c
-        self.w_core = f * 3 * self.lam_c
-        self.w_clad = f * 3 * self.lam_c
-        self.w_air  = f * 2 * self.lam_c
+        self.L_wg   = f * 6 * self.lam_c
+        self.w_core = f * 1 * self.lam_c
+        self.w_clad = f * 1 * self.lam_c
+        self.w_air  = f * 1 * self.lam_c
         self.d      = f * 4 * self.lam_c
         self.t_m    = f * 0.03 * self.lam_c
-        self.Ll     = f * 5 * self.lam_c
-        self.Lr     = f * 2 * self.lam_c
+        self.Ll     = f * 2 * self.lam_c
+        self.Lr     = f * 1 * self.lam_c
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core)
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
         self.finesse = kwargs.get("finesse", 30)
+        self.A      *= self.finesse**4 # Scale source amplitude with grid refinement to maintain power
         self.f_min  = self.c / self.W
 
         # Update params with kwargs
@@ -76,6 +77,7 @@ class SimulationConfig:
             self.nx = len(self.dx) + 1
             self.ny = len(self.dy) + 1
         
+        
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
         self.gamma      = np.zeros((self.nx-2, self.ny-2))
@@ -86,25 +88,30 @@ class SimulationConfig:
         self.x0 = getattr(self, "x0", self.n_Ll)
         self.y0 = getattr(self, "y0", self.ny // 2)
         
-        self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else self.nx - 50
+        sum_dx = np.cumsum(self.dx)
+        
+        self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else np.argmin(np.abs(sum_dx - (self.Ll + self.d + self.t_m + 0.8*self.L_wg)))
         self.y1 = self.y0 + kwargs["y1"] if "y1" in kwargs else self.y0
 
         dist_req = self.d / 2.0
         offset_x = np.searchsorted(np.cumsum(self.dx[self.x0:]), dist_req)
         offset_y = np.searchsorted(np.cumsum(self.dy[self.y0:]), dist_req)
+        
+        
+        
         self.x_diag = getattr(self, "x_diag", self.x0 + offset_x)
         self.y_diag = getattr(self, "y_diag", self.y0 + offset_y)
 
-        self.x_after = getattr(self, "x_after", self.nx - 50)
+        self.x_after = getattr(self, "x_after", np.argmin(np.abs(sum_dx - (self.Ll + self.d + self.t_m + self.L_wg))))
         self.y_after = getattr(self, "y_after", self.y0)
-        self.x_before = getattr(self, "x_before", self.x0 + int(self.n_d // 2))
+        self.x_before = getattr(self, "x_before", np.argmin(np.abs(sum_dx - (self.Ll+ self.d))))
         self.y_before = getattr(self, "y_before", self.y0)
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
         
         if self.solver_type == "fci":
-            CFL_default = 1.0
+            CFL_default = 1
         else:
             CFL_default = 0.95
 
@@ -793,6 +800,7 @@ class SimulationAnalyzer:
             cfg = res["config"]
             f_valid = hd["f_valid"]
             idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+            label = getattr(cfg, "label", cfg.solver_type.upper())
 
             if not source_plotted:
                 axes[0].plot(f_valid, np.abs(hd["J_src_valid"]) / np.abs(hd["J_src_valid"][idx_fc]), label='Source', lw=2, color='lightgray')
@@ -809,8 +817,8 @@ class SimulationAnalyzer:
             norm_anal = np.abs(H_anal[idx_fc])
             color = colors[i]
 
-            axes[0].plot(f_valid, np.abs(H_sim_c) / norm_sim, label=f'{label} Simulation', lw=2, color=color)
-            axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_c)), label=f'{label} Simulation', lw=2, color=color)
+            axes[0].plot(f_valid, np.abs(H_sim_c) / norm_sim, label=label, lw=2, color=color)
+            axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_c)), label=label, lw=2, color=color)
 
             if i == 0:
                 axes[0].plot(f_valid, np.abs(H_anal) / norm_anal, '--', label='Analytical', lw=2, color='black')
@@ -850,6 +858,7 @@ class SimulationAnalyzer:
             f_valid = hd["f_valid"]
             idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
             color = colors[i]
+            label = getattr(cfg, "label", cfg.solver_type.upper())
 
             if "Recorder Full" not in hd["obs_points"]:
                 continue
@@ -872,8 +881,8 @@ class SimulationAnalyzer:
                 min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
                 max_phase_error = np.max([max_phase_error, np.max(phase_error_deg[mask])])
 
-            axes[0].plot(f_valid, rel_error * 100, label=cfg.solver_type.upper(), lw=1.5, color=color)
-            axes[1].plot(f_valid, phase_error_deg, label=cfg.solver_type.upper(), lw=1.5, color=color)
+            axes[0].plot(f_valid, rel_error * 100, label=label, lw=1.5, color=color)
+            axes[1].plot(f_valid, phase_error_deg, label=label, lw=1.5, color=color)
 
         for ax in axes:
             ax.axvline(base_cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({base_cfg.f_break:.2e} Hz)')
@@ -950,7 +959,7 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
-    def plot_2d_animation(results, fps=40):
+    def plot_2d_animation(results, fps=40, color_sensitivity=0.001):
         cfg = results["config"]
         hist = results["history"]
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))[:cfg.nx]
@@ -961,7 +970,7 @@ class SimulationAnalyzer:
         ax.set_facecolor('black')
         
         z_norm = np.array(results["z_norm"]) # Using fetched z_norm
-        vmax = np.max(np.abs(hist * z_norm)) * 0.8
+        vmax = np.max(np.abs(hist * z_norm)) * 0.8 * color_sensitivity
         if vmax == 0:
             vmax = 1e-4
         quad = ax.pcolormesh(X, Y, (hist[0] * z_norm).T, shading='nearest', cmap='RdBu_r', vmin=-vmax, vmax=vmax, zorder=1)
@@ -1012,7 +1021,8 @@ class SimulationAnalyzer:
             cfg = res["config"]
             t = res["times"]
             ez = res["recorder_full"][:, cfg.y1]
-            ax.plot(t * 1e9, ez, label=cfg.solver_type.upper(), lw=1.5)
+            label = getattr(cfg, "label", cfg.solver_type.upper())
+            ax.plot(t * 1e9, ez, label=label, lw=1.5)
         ax.set_xlabel("Time (ns)")
         ax.set_ylabel("Ez Amplitude")
         ax.set_title("Recorder Comparison")
@@ -1029,54 +1039,147 @@ class SimulationAnalyzer:
 # Execution Example
 # ==============================================================================
 if __name__ == "__main__":
-    t0 = time.time()
-    res_fci = SimulationRunner.execute(
-        solver_type = "fci",
-        frame_skip = 2,
-        finesse = 15,
-        free_space_sim = True,
-        grid_refinement = False,
-        do_hankel = True,
-        recorders = ["after"]
-    )
-    t1 = time.time()
-    print(f"FCI executed in {t1-t0:.2f} seconds.")
-
-    # SimulationAnalyzer.verify_with_hankel(res_fci)
-    # SimulationAnalyzer.plot_error_analysis(res_fci)
-    SimulationAnalyzer.plot_2d_animation(res_fci)
-
-    t0 = time.time()
-    res_yee = SimulationRunner.execute(
-        solver_type="yee",
-        frame_skip=10,
-        finesse=30,
-        free_space_sim=True,
-        do_hankel=True,
-        recorders=["after"]
-    )
-    t1 = time.time()
-    print(f"YEE executed in {t1-t0:.2f} seconds.")
     
-    SimulationAnalyzer.plot_2d_animation(res_yee)
+    Compare_FCI_YEE = False
+    if Compare_FCI_YEE:
+        t0 = time.time()
+        res_fci_schur = SimulationRunner.execute(
+            solver_type = "fci",
+            frame_skip = 10,
+            finesse = 15,
+            free_space_sim = True,
+            grid_refinement = False,
+            do_hankel = True,
+            recorders = ["after"],
+            label = "FCI (Schur)"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+
+        SimulationAnalyzer.plot_2d_animation(res_fci_schur)
+
+        t0 = time.time()
+        res_yee = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=9,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee)
+        
+        SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
     
-    t0 = time.time()
-    res_yee_2 = SimulationRunner.execute(
-        solver_type="yee",
-        frame_skip=10,
-        finesse=20,
-        free_space_sim=True,
-        do_hankel=True,
-        recorders=["after"]
-    )
-    t1 = time.time()
-    print(f"YEE executed in {t1-t0:.2f} seconds.")
+    Compare_Grid_Refinement_YEE = False
     
+    if Compare_Grid_Refinement_YEE:
+        t0 = time.time()
+        res_yee_10 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_10)
+        
+        t0 = time.time()
+        res_yee_20 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=20,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/20$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_20)
+        
+        t0 = time.time()
+        res_yee_30 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/30$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_30)      
+        SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
+
+    Compare_Grid_Refinement_FCI = True
     
-    # SimulationAnalyzer.verify_with_hankel(res_yee)
-    # SimulationAnalyzer.plot_error_analysis(res_yee)
+    if Compare_Grid_Refinement_FCI:
+        t0 = time.time()
+        res_fci_10 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_10)
+        
+        t0 = time.time()
+        res_fci_20 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=20,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/20$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_20)
+        
+        t0 = time.time()
+        res_fci_30 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/30$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_30)      
+        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
+
     
 
-    SimulationAnalyzer.compare_recorders(res_yee, res_yee_2)
-
-
+    
