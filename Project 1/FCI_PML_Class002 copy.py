@@ -111,7 +111,7 @@ class FCI_TM_Solver:
 
         dxn = self.dx * np.ones(self.nx_n)
         dyn = self.dy * np.ones(self.ny_n)
-        # dxn[self.Nx//2 - 5:self.Nx//2 + 5] = self.dx * 0.1 # np.linspace(0.2, 1.0, 10)  # Optional: Local refinement in the center
+        dxn[self.Nx//2 - 5:self.Nx//2 + 5] = self.dx * 0.1 # np.linspace(0.2, 1.0, 10)  # Optional: Local refinement in the center
         
         N = self.nx_n * self.ny_n
         I = sp.eye(N, format='csr')
@@ -192,26 +192,24 @@ class FCI_TM_Solver:
             M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
             M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:].tocsc()
             
-            #Use DFT to compute inverses of the circulant blocks in M11 efficiently
-            first_row = np.array([1.0, 1.0] + [0.0] * (self.Nx - 2))   # first row of Ax2 = I + S
-            eigenvalues = np.fft.fft(first_row)                     # λ_k = 1 + e^{2πik/n}
 
             L11_inv = diag(1.0/L11.diagonal())
-            L22_inv = diag(1/byp) @ kron(Ix, Ay_inv)
+            L22_inv = spla.spsolve(L22, sp.eye(L22.shape[0], format='csc')) # diag(1/byp) @ kron(Ix, Ay_inv)
             L33_inv = diag(1.0/L33.diagonal())
-            L44_inv = diag(1/bz) @ kron(Ax_inv, Iy)
+            L44_inv = spla.spsolve(L44, sp.eye(L44.shape[0], format='csc')) #diag(1/bz) @ kron(Ax_inv, Iy)
 
-            # Invert M11
+            #Invert M11
             M11_inv = sp.bmat([
                 [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
                 [None,      L22_inv,                  None,       None],
                 [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
                 [None,      None,                     None,       L44_inv]
             ], format='csc')
-
+            print("M11 block inverted.")
+            # M11_inv = spla.inv(M11)  # For simplicity, directly invert M11. For larger systems, consider block-wise inversion or iterative solvers.
             # Precompute S = M22 - M21 * M11_inv * M12
             S = M22 - M21 @ M11_inv @ M12
-            S_fact = spla.factorized(S.tocsc())
+            S_fact = spla.splu(S.tocsc())
 
             # Define the solver function
             def solve_schur(b):
@@ -220,7 +218,7 @@ class FCI_TM_Solver:
                 b2 = b[2*self.len_hx + 2*self.len_hy:]
 
                 # Solve for u2 = S_inv* (b2 - M21 * M11_inv * b1)
-                u2 = S_fact(b2 - M21 @ M11_inv @ b1)
+                u2 = S_fact.solve(b2 - M21 @ M11_inv @ b1)
 
                 # Solve for u1 = M11_inv * (b1 - M12 * u2)
                 u1 = M11_inv @ (b1 - M12 @ u2)
@@ -237,7 +235,7 @@ class FCI_TM_Solver:
         movie_frames = []
         
         # Global index for Ez component at src_pos
-        offset = 2 * self.Nx + 2 * self.Ny
+        offset = 2 * self.len_hx + 2 * self.len_hy
         x0, y0 = src_pos
         x_obs, y_obs = obs_pos
 
@@ -466,8 +464,8 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 51, 
-    'Ny': 51, 
+    'Nx': 101, 
+    'Ny': 101, 
     'Nt': 100, 
     'lambda0': 1, 
     'CFL': 1,
