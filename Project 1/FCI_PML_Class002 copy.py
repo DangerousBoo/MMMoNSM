@@ -466,8 +466,8 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 72, 
-    'Ny': 72, 
+    'Nx': 51, 
+    'Ny': 51, 
     'Nt': 100, 
     'lambda0': 1, 
     'CFL': 1,
@@ -475,7 +475,7 @@ sim_params = {
     'Obs_loc' : (30,40),
     'bc': 'PBC',
     'solver': 'default',
-    'finesse': 10,
+    'finesse': 20,
     'frame_skip': 1,
     'hankel_f_min': 0.0,
     'hankel_f_max': 3 * 299792458
