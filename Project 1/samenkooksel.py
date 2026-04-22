@@ -387,8 +387,6 @@ class FCISolver:
             self.ny_n = self.cfg.ny
             self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
             self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
-            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
-            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
         else:
             self.nx_n = self.cfg.nx + 1
             self.ny_n = self.cfg.ny + 1
@@ -423,7 +421,7 @@ class FCISolver:
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
         p, m = int(2.0 * self.cfg.finesse), 4
-        k_max = 1.0
+        k_max = 2.0
         s_max = (m + 1) / (150 * np.pi * min([self.cfg.dx_0, self.cfg.dy_0]))
 
         for i in range(p):

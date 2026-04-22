@@ -85,8 +85,9 @@ class FCI_TM_Solver:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
-            Dx = sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr') / (2*d)
-            Dtx = sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr') / (2*d)
+            # Eq 2.133: derivative is (f_{j+1} - f_j) / Δy  → forward difference, divisor = d (not 2d)
+            Dx  = sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr') / d
+            Dtx = sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr') / d
             
             A1 = sp.diags_array([ones, ones, ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
             A2 = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
@@ -96,9 +97,10 @@ class FCI_TM_Solver:
         else:
             Ix = sp.eye(n + 1, format='csr')
 
-            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / (2*d)
-            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
-            Dtx[n, n-1] = - 1 / d
+            # PEC: forward difference Ez→H over one cell spacing, divisor = d
+            Dx  = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
+            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / d).tolil()
+            Dtx[n, n-1] = -1 / d  # one-sided at PEC wall
 
             A1 = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
             A2 = sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
@@ -112,39 +114,35 @@ class FCI_TM_Solver:
         Ix, Dx, Dtx, Ax1, Ax2 = self._get_operators(self.Nx, self.dx)
         Iy, Dy, Dty, Ay1, Ay2 = self._get_operators(self.Ny, self.dy)
         
-        DY_ez_to_hx = sp.kron(Ix, Dy)  # Size: len_hx x len_ez
-        DX_ez_to_hy = sp.kron(Dx, Iy)  # Size: len_hy x len_ez
-        DY_hx_to_ez = sp.kron(Ix, Dty) # Size: len_ez x len_hx
-        DX_hy_to_ez = sp.kron(Dtx, Iy) # Size: len_ez x len_hy
+        0.5 * DY_ez_to_hx = sp.kron(Ix, Dy)  # Size: len_hx x len_ez
+        0.5 * DX_ez_to_hy = sp.kron(Dx, Iy)  # Size: len_hy x len_ez
+        0.5 * DY_hx_to_ez = sp.kron(Ix, Dty) # Size: len_ez x len_hx
+        0.5 * DX_hy_to_ez = sp.kron(Dtx, Iy) # Size: len_ez x len_hy
 
         I_hx = sp.eye(self.len_hx, format='csr')
         I_hy = sp.eye(self.len_hy, format='csr')
         I_ez = sp.eye(self.len_ez, format='csr')
 
-        Interp_Y = sp.kron(Ix, Ay2) * 0.5  # Maps Ez grid -> Hx grid
-        Interp_X = sp.kron(Ax2, Iy) * 0.5  # Maps Ez grid -> Hy grid
+        # Eq 2.140: β_d^± = κd/Δτ ± Z0·σd/2  — always free-space c and Z0, never local v/Z
+        bxp = (kx / (c * dt) + self.Z0 * sx / 2.0).flatten()
+        byp = (ky / (c * dt) + self.Z0 * sy / 2.0).flatten()
+        bxm = (kx / (c * dt) - self.Z0 * sx / 2.0).flatten()
+        bym = (ky / (c * dt) - self.Z0 * sy / 2.0).flatten()
 
-        N = self.nx_n * self.ny_n
-        I = sp.eye(N, format='csr')
-
-        # Update coefficients
-        bxp = (kx / (v * dt) + Z * sx / 2.0).flatten()
-        byp = (ky / (v * dt) + Z * sy / 2.0).flatten()
-        bxm = (kx / (v * dt) - Z * sx / 2.0).flatten()
-        bym = (ky / (v * dt) - Z * sy / 2.0).flatten()
-
-        bxp_hx = Interp_Y.dot(bxp)
-        byp_hx = Interp_Y.dot(byp)
-        bxm_hx = Interp_Y.dot(bxm)
-        bym_hx = Interp_Y.dot(bym)
-
-        bxp_hy = Interp_X.dot(bxp)
-        byp_hy = Interp_X.dot(byp)
-        bxm_hy = Interp_X.dot(bxm)
-        bym_hy = Interp_X.dot(bym)
+        # PBC: collocated grid → len_hx = len_hy = len_ez = nx_n*ny_n, no interpolation needed.
+        # PEC: Interp_Y/X would be needed to map (Nx+1)*(Ny+1) Ez grid to (Nx+1)*Ny Hx grid.
+        if self.bc == 'PBC':
+            bxp_hx = bxp;  byp_hx = byp;  bxm_hx = bxm;  bym_hx = bym
+            bxp_hy = bxp;  byp_hy = byp;  bxm_hy = bxm;  bym_hy = bym
+        else:
+            Interp_Y = sp.kron(Ix, Ay2) * 0.5
+            Interp_X = sp.kron(Ax2, Iy) * 0.5
+            bxp_hx = Interp_Y.dot(bxp);  byp_hx = Interp_Y.dot(byp)
+            bxm_hx = Interp_Y.dot(bxm);  bym_hx = Interp_Y.dot(bym)
+            bxp_hy = Interp_X.dot(bxp);  byp_hy = Interp_X.dot(byp)
+            bxm_hy = Interp_X.dot(bxm);  bym_hy = Interp_X.dot(bym)
 
         self.bz_h = 1.0 / (c * dt)
-        self.bz_e = 1.0 / (v * dt)
         self.ap = 2.0 * gamma / dt + 1.0
         self.am = 2.0 * gamma / dt - 1.0
 
@@ -154,14 +152,16 @@ class FCI_TM_Solver:
         def to_diag_scal(val, length):
             val_flat = np.array(val).flatten()
             return sp.diags_array(np.full(length, val_flat), format='csr')
-            
+
+        # Eq 2.128 z-comp: κy·∂ẽz/∂τ + Z0σy·ẽz = κz·∂ėz/∂τ  (κz=1 in 2D TM)
+        # → L56 = -1/(c·dt)  [NOT -1/(v·dt)]
         L11 = to_diag_scal(1.0/(c*dt), self.len_hx);    L12 = to_diag_vec(-bxp_hx)
-        L22 = to_diag_vec(byp_hx);                      L25 = DY_ez_to_hx
+        L22 = to_diag_vec(byp_hx);                      L25 = 0.5 * DY_ez_to_hx
         L33 = to_diag_vec(bxp_hy);                      L34 = to_diag_vec(-byp_hy)
-        L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -DX_ez_to_hy
-        L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
+        L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -0.5 * DX_ez_to_hy
+        L55 = to_diag_vec(byp);                         L56 = -I_ez / (c * dt)
         L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
-        L71 = DY_hx_to_ez;      L73 = -DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
+        L71 = 0.5 * DY_hx_to_ez;      L73 = -0.5 * DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
         L87 = to_diag_vec(-self.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
@@ -176,14 +176,14 @@ class FCI_TM_Solver:
             [None, None, None, None, None, None, L87,  L88 ]  # jz
         ], format='csc')
 
-        # RHS uses beta_m and flips signs on derivative terms
+        # RHS: β_m coefficients, flipped derivative signs
         R11 = to_diag_scal(1.0/(c*dt), self.len_hx);    R12 = to_diag_vec(-bxm_hx)
-        R22 = to_diag_vec(bym_hx);                      R25 = -DY_ez_to_hx
+        R22 = to_diag_vec(bym_hx);                      R25 = -0.5 * DY_ez_to_hx
         R33 = to_diag_vec(bxm_hy);                      R34 = to_diag_vec(-bym_hy)
-        R44 = to_diag_scal(1.0/(c*dt), self.len_hy);    R45 = DX_ez_to_hy
-        R55 = to_diag_vec(bym);                         R56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
+        R44 = to_diag_scal(1.0/(c*dt), self.len_hy);    R45 = 0.5 * DX_ez_to_hy
+        R55 = to_diag_vec(bym);                         R56 = -I_ez / (c * dt)
         R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
-        R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
+        R71 = -0.5 * DY_hx_to_ez;     R73 = 0.5 * DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
         R87 = to_diag_vec(self.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
 
         # Assemble RHS Block Matrix
@@ -285,7 +285,7 @@ class FCI_TM_Solver:
             
             if i % frame_skip == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
+                img = ax.imshow((ez_2d * self.Z_local).T, cmap='RdBu', origin='lower', animated=True,
                                 extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1, zorder=1)
                 movie_frames.append([txt, img])
         
@@ -481,8 +481,8 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 200, 
-    'Ny': 200, 
+    'Nx': 600, 
+    'Ny': 600, 
     'Nt': 300, 
     'lambda0': 1, 
     'CFL': 2,
@@ -490,7 +490,7 @@ sim_params = {
     'Obs_loc' : (80,100),
     'bc': 'PBC',
     'solver': 'Schur',
-    'finesse': 30,
+    'finesse': 15,
     'frame_skip': 3,
     'hankel_f_min': 0.0,
     'hankel_f_max': 3 * 299792458
