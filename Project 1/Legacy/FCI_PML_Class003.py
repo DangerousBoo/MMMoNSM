@@ -2,13 +2,11 @@ import time
 import numpy as np
 from tqdm import tqdm
 import scipy.sparse as sp
-from scipy.sparse import kron
 import scipy.sparse.linalg as spla
 import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
 import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
-from scipy.linalg import dft
 
 class FCI_TM_Solver:
     def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver="Schur", finesse=20):
@@ -67,7 +65,7 @@ class FCI_TM_Solver:
         self.sy = np.zeros((self.nx_n,self.ny_n))
 
         p, m = int(1 * self.finesse), 4
-        k_max = 2
+        k_max = 1
         s_max = (m + 1) / (150 * np.pi * min([self.dx, self.dy]))
 
         for i in range(p):
@@ -87,26 +85,29 @@ class FCI_TM_Solver:
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
             
-            Dx = sp.diags_array(1/d) @ sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
-
-            A = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
+            Dx  = sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr') / d
+            Dtx = sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr') / d
             
-            return Ix, Dx, A
+            A1 = sp.diags_array([ones, ones, ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
+            A2 = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
+            
+            return Ix, Dx, Dtx, A1, A2
         
         else:
             Ix = sp.eye(n + 1, format='csr')
 
-            Dx = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / (2*d)
-            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / (2*d)).tolil()
-            Dtx[n, n-1] = - 1 / d
+            # PEC: forward difference Ez→H over one cell spacing, divisor = d
+            Dx  = (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0)) / d
+            Dtx = ((sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1)) / d).tolil()
+            Dtx[n, n-1] = -1 / d  # one-sided at PEC wall
 
-            A1 = sp.diags_array(1/(2*d)) @ sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
-            A2 = sp.diags_array(1/(2*d)) @ sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
+            A1 = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
+            A2 = sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
 
             return Ix, Dx.tocsr(), Dtx.tocsr(), A1.tocsr(), A2.tocsr()
 
     def _build_system(self):
-        v, Z, gamma, dt = self.v_local, self.Z_local, self.gamma, self.dt
+        v, c, Z, gamma, dt = self.v_local, self.c, self.Z_local, self.gamma, self.dt
         sx, sy, kx, ky = self._get_pml_profiles()
 
         dxn = self.dx * np.ones(self.nx_n)
@@ -126,24 +127,35 @@ class FCI_TM_Solver:
         bxm = (kx / (v * dt) - Z * sx / 2.0).flatten()
         bym = (ky / (v * dt) - Z * sy / 2.0).flatten()
 
+        # Interpolate PML conductivity profiles to half-grid locations (Staggered Yee matching)
+        Interp_Y = sp.kron(Ix, Ay2) * 0.5
+        Interp_X = sp.kron(Ax2, Iy) * 0.5
+        bxp_hx = Interp_Y.dot(bxp);  byp_hx = Interp_Y.dot(byp)
+        bxm_hx = Interp_Y.dot(bxm);  bym_hx = Interp_Y.dot(bym)
+        bxp_hy = Interp_X.dot(bxp);  byp_hy = Interp_X.dot(byp)
+        bxm_hy = Interp_X.dot(bxm);  bym_hy = Interp_X.dot(bym)
 
-        bz = (1.0 / (v * dt)).flatten()
-        ap = (2.0 * gamma / (v * dt) + 1.0).flatten()
-        am = (2.0 * gamma / (v * dt) - 1.0).flatten()
-        Z = Z.flatten()
-        v = v.flatten()
-        sigma = self.sigma.flatten()
-        def diag(vec):
-            return sp.diags_array(vec, offsets=0, format='csc')
+        self.bz_h = 1.0 / (c * dt)
+        self.ap = 2.0 * gamma / dt + 1.0
+        self.am = 2.0 * gamma / dt - 1.0
+
+        def to_diag_vec(vec):
+            return sp.diags_array(vec, format='csr')
             
-        L11 = diag(bz);                             L12 = diag(-bxp)
-        L22 = kron(Ix,Ay) @ diag(byp);              L25 = kron(Ix, Dy) @ diag(1/Z)
-        L33 = diag(bxp);                            L34 = diag(-byp)
-        L44 = kron(Ax,Iy) @ diag(bz);               L45 = kron(Dx, Iy) @ diag(-1/Z)
-        L55 = diag(byp);                            L56 = diag(-bz)
-        L66 = diag(bxp);                            L67 = diag(-1 / (v * dt))
-        L71 = kron(Ax,Dy);      L73 = -kron(Dx,Ay); L77 = kron(Ax,Ay) @ diag(1 / (Z * v * dt));     L78 = kron(Ax,Ay)/2
-        L87 = diag(-sigma);     L88 = diag(ap)
+        def to_diag_scal(val, length):
+            val_flat = np.array(val).flatten()
+            return sp.diags_array(np.full(length, val_flat), format='csr')
+
+        # Eq 2.128 z-comp: κy·∂ẽz/∂τ + Z0σy·ẽz = κz·∂ėz/∂τ  (κz=1 in 2D TM)
+        # → L56 = -1/(c·dt)  [NOT -1/(v·dt)]
+        L11 = to_diag_scal(1.0/(c*dt), self.len_hx);    L12 = to_diag_vec(-bxp_hx)
+        L22 = to_diag_vec(byp_hx);                      L25 = 0.5 * DY_ez_to_hx
+        L33 = to_diag_vec(bxp_hy);                      L34 = to_diag_vec(-byp_hy)
+        L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -0.5 * DX_ez_to_hy
+        L55 = to_diag_vec(byp);                         L56 = -I_ez / (c * dt)
+        L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
+        L71 = 0.5 * DY_hx_to_ez;      L73 = -0.5 * DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
+        L87 = to_diag_vec(-self.sigma.flatten());       L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
 
         # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
@@ -157,15 +169,15 @@ class FCI_TM_Solver:
             [None, None, None, None, None, None, L87,  L88 ]  # jz
         ], format='csc')
 
-        # RHS uses beta_m and flips signs on derivative terms
-        R11 = diag(bz);                             R12 = diag(-bxm)
-        R22 = kron(Ix,Ay) @ diag(bym);              R25 = kron(Ix, Dy) @ diag(-1/Z)
-        R33 = diag(bxm);                            R34 = diag(-bym)
-        R44 = kron(Ax,Iy) @ diag(bz);               R45 = kron(Dx, Iy) @ diag(1/Z)
-        R55 = diag(bym);                            R56 = diag(-bz)
-        R66 = diag(bxm);                            R67 = diag(-1 / (v * dt))
-        R71 = -kron(Ax,Dy);      R73 = kron(Dx,Ay); R77 = kron(Ax,Ay) @ diag(1 / (Z * v * dt));     R78 = -kron(Ax,Ay)/2
-        R87 = diag(sigma);       R88 = diag(am)
+        # RHS: β_m coefficients, flipped derivative signs
+        R11 = to_diag_scal(1.0/(c*dt), self.len_hx);    R12 = to_diag_vec(-bxm_hx)
+        R22 = to_diag_vec(bym_hx);                      R25 = -0.5 * DY_ez_to_hx
+        R33 = to_diag_vec(bxm_hy);                      R34 = to_diag_vec(-bym_hy)
+        R44 = to_diag_scal(1.0/(c*dt), self.len_hy);    R45 = 0.5 * DX_ez_to_hy
+        R55 = to_diag_vec(bym);                         R56 = -I_ez / (c * dt)
+        R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
+        R71 = -0.5 * DY_hx_to_ez;     R73 = 0.5 * DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
+        R87 = to_diag_vec(self.sigma.flatten());        R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
 
         # Assemble RHS Block Matrix
         self.RHS = sp.bmat([
@@ -241,9 +253,9 @@ class FCI_TM_Solver:
 
         src_idx = offset + x0 * self.ny_n + y0
 
-        shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-        neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
-        weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
+        # shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+        # neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
+        # weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
 
         fig, ax = plt.subplots()
         
@@ -257,10 +269,10 @@ class FCI_TM_Solver:
             b = self.RHS.dot(u)
 
             #Smooth source over a couple of grid points to prevent checkerboarding
-            src_val = self.my_src(t) * self.dx * self.dy  
-            # b[src_idx] -= src_val  # Inject into central point and one neighbor for smoother excitation
-            for idx, w in zip(neighbors, weights):
-                b[idx] += src_val * w
+            src_val = self.my_src(t)
+            b[src_idx] -= src_val
+            # for idx, w in zip(neighbors, weights):
+            #     b[idx] += src_val * w
 
             u = self.solve_func(b)
             ez_2d = u[self.idx_ez].reshape((self.nx_n, self.ny_n))
@@ -268,7 +280,7 @@ class FCI_TM_Solver:
             
             if i % frame_skip == 0:
                 txt = ax.text(0.5, 1.05, f'Step: {i}/{self.Nt} | BC: {self.bc}', ha="center", transform=ax.transAxes)
-                img = ax.imshow(ez_2d.T * self.Z_local, cmap='RdBu', origin='lower', animated=True,
+                img = ax.imshow((ez_2d * self.Z_local).T, cmap='RdBu', origin='lower', animated=True,
                                 extent=[0, self.Nx*self.dx, 0, self.Ny*self.dy], vmin=-0.1, vmax=0.1, zorder=1)
                 movie_frames.append([txt, img])
         
@@ -468,13 +480,13 @@ sim_params = {
     'Ny': 101, 
     'Nt': 100, 
     'lambda0': 1, 
-    'CFL': 1,
-    'Source_loc' : (25,25),
-    'Obs_loc' : (30,40),
+    'CFL':0.99,
+    'Source_loc' : (50,100),
+    'Obs_loc' : (80,100),
     'bc': 'PBC',
-    'solver': 'default',
-    'finesse': 10,
-    'frame_skip': 1,
+    'solver': 'Schur',
+    'finesse': 15,
+    'frame_skip': 3,
     'hankel_f_min': 0.0,
     'hankel_f_max': 3 * 299792458
 }
