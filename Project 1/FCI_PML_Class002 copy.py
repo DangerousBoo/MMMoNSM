@@ -237,7 +237,7 @@ class FCI_TM_Solver:
         movie_frames = []
         
         # Global index for Ez component at src_pos
-        offset = 2 * self.Nx + 2 * self.Ny
+        offset = self.idx_ez.start  # = 2*len_hx + 2*len_hy
         x0, y0 = src_pos
         x_obs, y_obs = obs_pos
 
@@ -466,8 +466,8 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 51, 
-    'Ny': 51, 
+    'Nx': 72, 
+    'Ny': 72, 
     'Nt': 100, 
     'lambda0': 1, 
     'CFL': 1,
