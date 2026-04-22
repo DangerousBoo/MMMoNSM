@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
 import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
+from scipy.linalg import dft
 
 class FCI_TM_Solver:
     def __init__(self, Nx, Ny, Nt, lambda0, CFL, bc='PEC', solver="Schur", finesse=20):
@@ -110,7 +111,7 @@ class FCI_TM_Solver:
 
         dxn = self.dx * np.ones(self.nx_n)
         dyn = self.dy * np.ones(self.ny_n)
-        dxn[self.Nx//2 - 5:self.Nx//2 + 5] = self.dx * 0.1 # np.linspace(0.2, 1.0, 10)  # Optional: Local refinement in the center
+        # dxn[self.Nx//2 - 5:self.Nx//2 + 5] = self.dx * 0.1 # np.linspace(0.2, 1.0, 10)  # Optional: Local refinement in the center
         
         N = self.nx_n * self.ny_n
         I = sp.eye(N, format='csr')
@@ -133,7 +134,7 @@ class FCI_TM_Solver:
         v = v.flatten()
         sigma = self.sigma.flatten()
         def diag(vec):
-            return sp.diags_array(vec, offsets=0, format='csr')
+            return sp.diags_array(vec, offsets=0, format='csc')
             
         L11 = diag(bz);                             L12 = diag(-bxp)
         L22 = kron(Ix,Ay) @ diag(byp);              L25 = kron(Ix, Dy) @ diag(1/Z)
@@ -190,11 +191,15 @@ class FCI_TM_Solver:
             M12 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:].tocsc()
             M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
             M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:].tocsc()
+            
+            #Use DFT to compute inverses of the circulant blocks in M11 efficiently
+            first_row = np.array([1.0, 1.0] + [0.0] * (self.Nx - 2))   # first row of Ax2 = I + S
+            eigenvalues = np.fft.fft(first_row)                     # λ_k = 1 + e^{2πik/n}
 
-            L11_inv = sp.diags_array(1.0/L11.diagonal(), format='csc')
-            L22_inv = sp.diags_array(1.0/L22.diagonal(), format='csc')
-            L33_inv = sp.diags_array(1.0/L33.diagonal(), format='csc')
-            L44_inv = sp.diags_array(1.0/L44.diagonal(), format='csc')
+            L11_inv = diag(1.0/L11.diagonal())
+            L22_inv = diag(1/byp) @ kron(Ix, Ay_inv)
+            L33_inv = diag(1.0/L33.diagonal())
+            L44_inv = diag(1/bz) @ kron(Ax_inv, Iy)
 
             # Invert M11
             M11_inv = sp.bmat([
@@ -238,9 +243,9 @@ class FCI_TM_Solver:
 
         src_idx = offset + x0 * self.ny_n + y0
 
-        # shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-        # neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
-        # weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
+        shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+        neighbors = [offset + ((x0 + dx) % self.nx_n) * self.ny_n + ((y0 + dy) % self.ny_n) for dx, dy in shifts]
+        weights = np.array([0.5, 0.125, 0.125, 0.125, 0.125])
 
         fig, ax = plt.subplots()
         
@@ -254,10 +259,10 @@ class FCI_TM_Solver:
             b = self.RHS.dot(u)
 
             #Smooth source over a couple of grid points to prevent checkerboarding
-            src_val = self.my_src(t)
-            b[src_idx] = src_val
-            # for idx, w in zip(neighbors, weights):
-            #     b[idx] += src_val * w
+            src_val = self.my_src(t) * self.dx * self.dy  
+            # b[src_idx] -= src_val  # Inject into central point and one neighbor for smoother excitation
+            for idx, w in zip(neighbors, weights):
+                b[idx] += src_val * w
 
             u = self.solve_func(b)
             ez_2d = u[self.idx_ez].reshape((self.nx_n, self.ny_n))
@@ -461,15 +466,15 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 300, 
-    'Ny': 300, 
+    'Nx': 51, 
+    'Ny': 51, 
     'Nt': 100, 
     'lambda0': 1, 
-    'CFL': 2,
-    'Source_loc' : (50,100),
-    'Obs_loc' : (80,100),
+    'CFL': 1,
+    'Source_loc' : (25,25),
+    'Obs_loc' : (30,40),
     'bc': 'PBC',
-    'solver': 'Schur',
+    'solver': 'default',
     'finesse': 10,
     'frame_skip': 1,
     'hankel_f_min': 0.0,
