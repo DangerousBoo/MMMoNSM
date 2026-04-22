@@ -381,17 +381,13 @@ class FCISolver:
         self.cfg = config
 
 
-        # PBC drops the redundant N+1 boundary node to form a perfect ring
+        # PBC: N nodes form a closed ring; no extra boundary node needed
         if self.cfg.fci_bc == 'PBC':
             self.nx_n = self.cfg.nx
             self.ny_n = self.cfg.ny
-            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
-            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
         else:
             self.nx_n = self.cfg.nx + 1
             self.ny_n = self.cfg.ny + 1
-            self.cfg.dx = np.concatenate(([self.cfg.dx_0], self.cfg.dx, [self.cfg.dx_0]))
-            self.cfg.dy = np.concatenate(([self.cfg.dy_0], self.cfg.dy, [self.cfg.dy_0]))
   
         
 
@@ -440,87 +436,54 @@ class FCISolver:
         if self.cfg.fci_bc == 'PBC':
             ones = np.ones(n)
             Ix = sp.eye(n, format='csr')
-            
-            Dx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
-            Dtx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ sp.diags_array([ones, -ones, -ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
-            
-            A1 = sp.diags_array([ones, ones, ones], offsets=[0, -1, n-1], shape=(n, n), format='csr')
-            A2 = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
-            
-            return Ix, Dx, Dtx, A1, A2
-        
+            # Forward-difference operator scaled by local spacing; Ax averages node i with i+1 (mod n)
+            Dx = sp.diags_array(1/d) @ sp.diags_array([-ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
+            Ax = sp.diags_array([ones, ones, ones], offsets=[0, 1, 1-n], shape=(n, n), format='csr')
+            return Ix, Dx, Ax
         else:
             Ix = sp.eye(n + 1, format='csr')
-
-            Dx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n, n + 1, k=1) - sp.eye(n, n + 1, k=0))
-            Dtx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n + 1, n, k=0) - sp.eye(n + 1, n, k=-1))
-            Dtx[n, n-1] = - 1 / d[-1]
-
-            A1 = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
-            A2 = sp.diags_array([1, 1], offsets=[0, 1], shape=(n, n+1), format='csr')
-
-            return Ix, Dx.tocsr(), Dtx.tocsr(), A1.tocsr(), A2.tocsr()
+            Dx  = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n, n+1, k=1) - sp.eye(n, n+1, k=0))
+            Dtx = sp.diags(1/(2*d), offsets=0, shape=(n, n), format='csr') @ (sp.eye(n+1, n, k=0) - sp.eye(n+1, n, k=-1))
+            Dtx = Dtx.tolil(); Dtx[n, n-1] = -1 / d[-1]; Dtx = Dtx.tocsr()
+            A1  = sp.diags_array([1, 1], offsets=[0, -1], shape=(n, n-1), format='csr')
+            A2  = sp.diags_array([1, 1], offsets=[0,  1], shape=(n, n+1), format='csr')
+            return Ix, Dx.tocsr(), Dtx, A1.tocsr(), A2.tocsr()
 
     def _build_system(self):
-        v, c, Z, gamma, dt = self.cfg.v_local, self.cfg.c, self.cfg.Z_local, self.cfg.gamma, self.cfg.dt
+        v     = self.cfg.v_local.flatten()
+        Z     = self.cfg.Z_local.flatten()
+        gamma = self.cfg.gamma
+        dt    = self.cfg.dt
         sx, sy, kx, ky = self._get_pml_profiles()
+        sx = sx.flatten(); sy = sy.flatten()
+        kx = kx.flatten(); ky = ky.flatten()
 
-        Ix, Dx, Dtx, Ax1, Ax2 = self._get_operators(self.nx_n, self.cfg.dx)
-        Iy, Dy, Dty, Ay1, Ay2 = self._get_operators(self.ny_n, self.cfg.dy)
-        
-        DY_ez_to_hx = sp.kron(Ix, Dy)  # Size: len_hx x len_ez
-        DX_ez_to_hy = sp.kron(Dx, Iy)  # Size: len_hy x len_ez
-        DY_hx_to_ez = sp.kron(Ix, Dty) # Size: len_ez x len_hx
-        DX_hy_to_ez = sp.kron(Dtx, Iy) # Size: len_ez x len_hy
+        Ix, Dx, Ax = self._get_operators(self.nx_n, self.cfg.dx)
+        Iy, Dy, Ay = self._get_operators(self.ny_n, self.cfg.dy)
 
-        I_hx = sp.eye(self.len_hx, format='csr')
-        I_hy = sp.eye(self.len_hy, format='csr')
-        I_ez = sp.eye(self.len_ez, format='csr')
+        bxp = kx / (v * dt) + Z * sx / 2.0
+        byp = ky / (v * dt) + Z * sy / 2.0
+        bxm = kx / (v * dt) - Z * sx / 2.0
+        bym = ky / (v * dt) - Z * sy / 2.0
+        bz  = 1.0 / (v * dt)
+        ap  = np.full(self.len_ez, 2.0 * gamma / dt + 1.0)
+        am  = np.full(self.len_ez, 2.0 * gamma / dt - 1.0)
+        sigma = self.cfg.sigma.flatten()
 
-        Interp_Y = sp.kron(Ix, Ay2) * 0.5  # Maps Ez grid -> Hx grid
-        Interp_X = sp.kron(Ax2, Iy) * 0.5  # Maps Ez grid -> Hy grid
+        def diag(vec):
+            return sp.diags_array(vec, format='csc')
 
-        N = self.nx_n * self.ny_n
-        I = sp.eye(N, format='csr')
+        # L blocks: kron(Ax, Dy) computes the curl using local-spacing derivatives
+        # and area-interpolation (Ax/Ay), replacing the old transpose-diff + interp split
+        L11 = diag(bz);                                  L12 = diag(-bxp)
+        L22 = sp.kron(Ix, Ay) @ diag(byp);               L25 = sp.kron(Ix, Dy) @ diag(1/Z)
+        L33 = diag(bxp);                                 L34 = diag(-byp)
+        L44 = sp.kron(Ax, Iy) @ diag(bz);                L45 = sp.kron(Dx, Iy) @ diag(-1/Z)
+        L55 = diag(byp);                                 L56 = diag(-bz)
+        L66 = diag(bxp);                                 L67 = diag(-bz)
+        L71 = sp.kron(Ax, Dy); L73 = -sp.kron(Dx, Ay);  L77 = sp.kron(Ax, Ay) @ diag(1/(Z * v * dt)); L78 = sp.kron(Ax, Ay) / 2
+        L87 = diag(-sigma);    L88 = diag(ap)
 
-        # Update coefficients
-        bxp = (kx / (v * dt) + Z * sx / 2.0).flatten()
-        byp = (ky / (v * dt) + Z * sy / 2.0).flatten()
-        bxm = (kx / (v * dt) - Z * sx / 2.0).flatten()
-        bym = (ky / (v * dt) - Z * sy / 2.0).flatten()
-
-        bxp_hx = Interp_Y.dot(bxp)
-        byp_hx = Interp_Y.dot(byp)
-        bxm_hx = Interp_Y.dot(bxm)
-        bym_hx = Interp_Y.dot(bym)
-
-        bxp_hy = Interp_X.dot(bxp)
-        byp_hy = Interp_X.dot(byp)
-        bxm_hy = Interp_X.dot(bxm)
-        bym_hy = Interp_X.dot(bym)
-
-        self.bz_h = 1.0 / (c * dt)
-        self.bz_e = 1.0 / (v * dt)
-        self.ap = 2.0 * gamma / dt + 1.0
-        self.am = 2.0 * gamma / dt - 1.0
-
-        def to_diag_vec(vec):
-            return sp.diags_array(vec, format='csr')
-            
-        def to_diag_scal(val, length):
-            val_flat = np.array(val).flatten()
-            return sp.diags_array(np.full(length, val_flat), format='csr')
-            
-        L11 = to_diag_scal(1.0/(c*dt), self.len_hx);    L12 = to_diag_vec(-bxp_hx)
-        L22 = to_diag_vec(byp_hx);                      L25 = DY_ez_to_hx
-        L33 = to_diag_vec(bxp_hy);                      L34 = to_diag_vec(-byp_hy)
-        L44 = to_diag_scal(1.0/(c*dt), self.len_hy);    L45 = -DX_ez_to_hy
-        L55 = to_diag_vec(byp);                         L56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
-        L66 = to_diag_vec(bxp);                         L67 = -I_ez / (c * dt)
-        L71 = DY_hx_to_ez;      L73 = -DX_hy_to_ez;     L77 = I_ez / (c * dt);      L78 = I_ez / 2.0
-        L87 = to_diag_vec(-self.cfg.sigma.flatten());   L88 = to_diag_scal(2.0*gamma/dt + 1.0, self.len_ez)
-
-        # Assemble LHS Block Matrix
         self.LHS = sp.bmat([
             [L11,  L12,  None, None, None, None, None, None], # hx
             [None, L22,  None, None, L25,  None, None, None], # hx_dot
@@ -532,17 +495,15 @@ class FCISolver:
             [None, None, None, None, None, None, L87,  L88 ]  # jz
         ], format='csc')
 
-        # RHS uses beta_m and flips signs on derivative terms
-        R11 = to_diag_scal(1.0/(c*dt), self.len_hx);    R12 = to_diag_vec(-bxm_hx)
-        R22 = to_diag_vec(bym_hx);                      R25 = -DY_ez_to_hx
-        R33 = to_diag_vec(bxm_hy);                      R34 = to_diag_vec(-bym_hy)
-        R44 = to_diag_scal(1.0/(c*dt), self.len_hy);    R45 = DX_ez_to_hy
-        R55 = to_diag_vec(bym);                         R56 = to_diag_scal(-1.0/(v*dt), self.len_ez)
-        R66 = to_diag_vec(bxm);                         R67 = -I_ez / (c * dt)
-        R71 = -DY_hx_to_ez;     R73 = DX_hy_to_ez;      R77 = I_ez / (c * dt);      R78 = -I_ez / 2.0
-        R87 = to_diag_vec(self.cfg.sigma.flatten());    R88 = to_diag_scal(2.0*gamma/dt - 1.0, self.len_ez)
+        R11 = diag(bz);                                  R12 = diag(-bxm)
+        R22 = sp.kron(Ix, Ay) @ diag(bym);               R25 = -sp.kron(Ix, Dy) @ diag(1/Z)
+        R33 = diag(bxm);                                 R34 = diag(-bym)
+        R44 = sp.kron(Ax, Iy) @ diag(bz);                R45 = sp.kron(Dx, Iy) @ diag(1/Z)
+        R55 = diag(bym);                                 R56 = diag(-bz)
+        R66 = diag(bxm);                                 R67 = diag(-bz)
+        R71 = -sp.kron(Ax, Dy); R73 = sp.kron(Dx, Ay);  R77 = sp.kron(Ax, Ay) @ diag(1/(Z * v * dt)); R78 = -sp.kron(Ax, Ay) / 2
+        R87 = diag(sigma);      R88 = diag(am)
 
-        # Assemble RHS Block Matrix
         self.RHS = sp.bmat([
             [R11,  R12,  None, None, None, None, None, None], # hx
             [None, R22,  None, None, R25,  None, None, None], # hx_dot
@@ -554,45 +515,10 @@ class FCISolver:
             [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
-        if self.cfg.fci_solver == "default":
-            print("Pre-factoring the 8x8 system...")
-            self.solve_func = spla.factorized(self.LHS.tocsc())
-
-        elif self.cfg.fci_solver == "Schur":
-            print("Pre-factoring the 8x8 system using Schur complement...")
-
-            M11 = self.LHS[:2*self.len_hx + 2*self.len_hy, :2*self.len_hx + 2*self.len_hy].tocsc()
-            M12 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:].tocsc()
-            M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
-            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:].tocsc()
-
-            L11_inv = sp.diags_array(1.0/L11.diagonal(), format='csc')
-            L22_inv = sp.diags_array(1.0/L22.diagonal(), format='csc')
-            L33_inv = sp.diags_array(1.0/L33.diagonal(), format='csc')
-            L44_inv = sp.diags_array(1.0/L44.diagonal(), format='csc')
-
-            # Invert M11
-            M11_inv = sp.bmat([
-                [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
-                [None,      L22_inv,                  None,       None],
-                [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
-                [None,      None,                     None,       L44_inv]
-            ], format='csc')
-
-            # Precompute S = M22 - M21 * M11_inv * M12
-            S = M22 - M21 @ M11_inv @ M12
-            S_fact = spla.factorized(S.tocsc())
-
-            def solve_schur(b):
-                b1 = b[:2*self.len_hx + 2*self.len_hy]
-                b2 = b[2*self.len_hx + 2*self.len_hy:]
-
-                u2 = S_fact(b2 - M21 @ M11_inv @ b1)
-                u1 = M11_inv @ (b1 - M12 @ u2)
-
-                return np.concatenate([u1, u2])
-
-            self.solve_func = solve_schur
+        # TODO: replace with extended Schur complement (eliminate jz, ez, ez_dot analytically,
+        # leaving a single Nx*Ny Helmholtz-like solve for ez_ddot)
+        print("Pre-factoring system (full LU)...")
+        self.solve_func = spla.factorized(self.LHS.tocsc())
 
     def step(self, t):
         b = self.RHS.dot(self.u)
@@ -1038,7 +964,7 @@ class SimulationAnalyzer:
 # ==============================================================================
 if __name__ == "__main__":
     
-    Compare_FCI_YEE = False
+    Compare_FCI_YEE = True
     if Compare_FCI_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
@@ -1046,7 +972,7 @@ if __name__ == "__main__":
             frame_skip = 10,
             finesse = 15,
             free_space_sim = True,
-            grid_refinement = False,
+            grid_refinement = 'step',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI (Schur)"
@@ -1126,7 +1052,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_30)      
         SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
 
-    Compare_Grid_Refinement_FCI = True
+    Compare_Grid_Refinement_FCI = False
     
     if Compare_Grid_Refinement_FCI:
         t0 = time.time()
