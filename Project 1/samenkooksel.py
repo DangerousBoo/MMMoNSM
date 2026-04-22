@@ -43,18 +43,19 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = 1.5
-        self.L_wg   = f * 10 * self.lam_c
-        self.w_core = f * 3 * self.lam_c
-        self.w_clad = f * 3 * self.lam_c
-        self.w_air  = f * 2.5 * self.lam_c
+        self.L_wg   = f * 6 * self.lam_c
+        self.w_core = f * 1 * self.lam_c
+        self.w_clad = f * 1 * self.lam_c
+        self.w_air  = f * 1 * self.lam_c
         self.d      = f * 4 * self.lam_c
         self.t_m    = f * 0.03 * self.lam_c
-        self.Ll     = f * 5 * self.lam_c
-        self.Lr     = f * 2.5 * self.lam_c
+        self.Ll     = f * 2 * self.lam_c
+        self.Lr     = f * 1 * self.lam_c
         self.L      = self.Ll + self.d + self.t_m + self.L_wg + self.Lr
         self.W      = f * (2 * self.w_air + 2 * self.w_clad + self.w_core)
         self.T      = self.t0 + 3*self.sig_t + (self.d + self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
         self.finesse = kwargs.get("finesse", 30)
+        self.A      *= self.finesse**4 # Scale source amplitude with grid refinement to maintain power
         self.f_min  = self.c / self.W
 
         # Update params with kwargs
@@ -76,6 +77,7 @@ class SimulationConfig:
             self.nx = len(self.dx) + 1
             self.ny = len(self.dy) + 1
         
+        
         self.epsilon_r  = np.ones((self.nx, self.ny))
         self.sigma      = np.zeros((self.nx-2, self.ny-2))
         self.gamma      = np.zeros((self.nx-2, self.ny-2))
@@ -86,25 +88,30 @@ class SimulationConfig:
         self.x0 = getattr(self, "x0", self.n_Ll)
         self.y0 = getattr(self, "y0", self.ny // 2)
         
-        self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else self.nx - 50
+        sum_dx = np.cumsum(self.dx)
+        
+        self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else np.argmin(np.abs(sum_dx - (self.Ll + self.d + self.t_m + 0.8*self.L_wg)))
         self.y1 = self.y0 + kwargs["y1"] if "y1" in kwargs else self.y0
 
         dist_req = self.d / 2.0
         offset_x = np.searchsorted(np.cumsum(self.dx[self.x0:]), dist_req)
         offset_y = np.searchsorted(np.cumsum(self.dy[self.y0:]), dist_req)
+        
+        
+        
         self.x_diag = getattr(self, "x_diag", self.x0 + offset_x)
         self.y_diag = getattr(self, "y_diag", self.y0 + offset_y)
 
-        self.x_after = getattr(self, "x_after", self.nx - 50)
+        self.x_after = getattr(self, "x_after", np.argmin(np.abs(sum_dx - (self.Ll + self.d + self.t_m + self.L_wg))))
         self.y_after = getattr(self, "y_after", self.y0)
-        self.x_before = getattr(self, "x_before", self.x0 + int(self.n_d // 2))
+        self.x_before = getattr(self, "x_before", np.argmin(np.abs(sum_dx - (self.Ll+ self.d))))
         self.y_before = getattr(self, "y_before", self.y0)
 
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
         
         if self.solver_type == "fci":
-            CFL_default = 2.0
+            CFL_default = 1
         else:
             CFL_default = 0.95
 
@@ -588,34 +595,18 @@ class FCISolver:
             self.solve_func = solve_schur
 
     def step(self, t):
-        # 1. 
         b = self.RHS.dot(self.u)
-        self.u = self.solve_func(b)
-        self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
-        
-        # 2. 
+
         src_val = self.cfg.A * np.cos(2 * np.pi * self.cfg.f_c * (t - self.cfg.t0)) * \
                   np.exp(-0.5 * ((t - self.cfg.t0) / self.cfg.sig_t)**2)
-                  
-        # 3. Match YEE's exact amplitude scaling
-        v = self.cfg.v_local[self.cfg.x0, self.cfg.y0]
+
         dx = self.cfg.dx[self.cfg.x0]
         dy = self.cfg.dy[self.cfg.y0]
-        coef_p = 1.0 / (v * self.cfg.dt) + self.cfg.Z_local[self.cfg.x0, self.cfg.y0] * self.cfg.sigma[self.cfg.x0, self.cfg.y0] / (2.0 * self.ap)
-        
-        scaled_src = src_val * (dx * dy) / coef_p
-        
-        # 4. Spatially distribute
-        weights = [
-            (-1, -1, 1/16), (0, -1, 1/8), (1, -1, 1/16),
-            (-1,  0, 1/8),  (0,  0, 1/4), (1,  0, 1/8),
-            (-1,  1, 1/16), (0,  1, 1/8), (1,  1, 1/16)
-        ]
-        
-        for i, j, w in weights:
-            self.Ez[self.cfg.x0 + i, self.cfg.y0 + j] -= scaled_src * w
-            
-        self.u[self.idx_ez] = self.Ez.flatten()
+        src_idx = self.idx_ez.start + self.cfg.x0 * self.ny_n + self.cfg.y0
+        b[src_idx] -= src_val * dx * dy
+
+        self.u = self.solve_func(b)
+        self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
 
 # ==============================================================================
 # 3. Simulation Runner
@@ -630,15 +621,20 @@ class SimulationRunner:
         else:
             print("Initializing standard Yee Solver...")
             solver = YeeSolver(config)
+        
+        recorders = getattr(config, "recorders", ["all"])
             
         n_frames = int(np.ceil(config.nt / frame_skip))
         field_history = np.zeros((n_frames, config.nx, config.ny), dtype=np.float32)
         recorder_plane = np.zeros((n_frames, config.ny), dtype=np.float32)
         recorder_full = np.zeros((config.nt, config.ny), dtype=np.float32)
         
-        rec_diag = np.zeros(config.nt, dtype=np.float32)
-        rec_after = np.zeros(config.nt, dtype=np.float32)
-        rec_before = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "diag" in recorders:
+            rec_diag = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "after" in recorders:
+            rec_after = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "before" in recorders:
+            rec_before = np.zeros(config.nt, dtype=np.float32)
         
         frame_idx = 0
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt}, solver={config.solver_type})"):
@@ -646,85 +642,118 @@ class SimulationRunner:
             solver.step(t)
             
             recorder_full[it, :] = solver.Ez[config.x1, :]
-            rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
-            rec_after[it] = solver.Ez[config.x_after, config.y_after]
-            rec_before[it] = solver.Ez[config.x_before, config.y_before]
+            
+            if "all" in recorders or "diag" in recorders:
+                rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
+            if "all" in recorders or "after" in recorders:
+                rec_after[it] = solver.Ez[config.x_after, config.y_after]
+            if "all" in recorders or "before" in recorders:
+                rec_before[it] = solver.Ez[config.x_before, config.y_before]
             
             if it % frame_skip == 0 and frame_idx < n_frames:
                 field_history[frame_idx] = solver.Ez
                 recorder_plane[frame_idx, :] = solver.Ez[config.x1, :]
                 frame_idx += 1
-            
-        return {
-            "config": config,
-            "history": field_history,
-            "recorder": recorder_plane,
-            "recorder_full": recorder_full,
-            "rec_diag": rec_diag,
-            "rec_after": rec_after,
-            "rec_before": rec_before,
-            "frame_skip": frame_skip,
-            "times": np.arange(config.nt) * config.dt,
-            "z_norm": getattr(solver, 'Z_local', config.Z_local) # Fetch Z_local safely depending on solver setup
-        }
+        result = {
+                "config": config,
+                "history": field_history,
+                "recorder": recorder_plane,
+                "recorder_full": recorder_full,
+                "frame_skip": frame_skip,
+                "times": np.arange(config.nt) * config.dt,
+                "z_norm": getattr(solver, 'Z_local', config.Z_local)
+            }
+
+        if "all" in recorders or "diag" in recorders:
+            result["rec_diag"] = rec_diag
+
+        if "all" in recorders or "after" in recorders:
+            result["rec_after"] = rec_after
+
+        if "all" in recorders or "before" in recorders:
+            result["rec_before"] = rec_before
+
+        return result
 
 # ==============================================================================
 # 4. Simulation Analyzer
 # ==============================================================================
 class SimulationAnalyzer:
     @staticmethod
-    def verify_with_hankel(results):
-        print("\n--- Plotting Hankel verification ---")
+    def _compute_hankel_data(results):
+        if "_hankel_data" in results:
+            return results["_hankel_data"]
+
         cfg = results["config"]
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))[:cfg.nx]
         nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))[:cfg.ny]
         t = np.arange(cfg.nt) * cfg.dt
         n_pad = 2**int(np.ceil(np.log2(cfg.nt * 8)))
         freqs = fftfreq(n_pad, cfg.dt)
-        f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0.2)
+        f_min = getattr(cfg, "hankel_f_min", cfg.f_c * 0)
         f_max = getattr(cfg, "hankel_f_max", cfg.f_c * 3.0)
         band_idx = np.where((freqs > f_min) & (freqs < f_max))[0]
         f_valid = freqs[band_idx]
         omega = 2 * np.pi * f_valid
         k0 = omega / cfg.c
-        
+
         src_time = cfg.A * np.cos(2*np.pi*cfg.f_c*(t-cfg.t0)) * np.exp(-0.5*((t-cfg.t0)/cfg.sig_t)**2)
         J_src_f = fft(src_time, n=n_pad) * cfg.dt
         J_src_valid = J_src_f[band_idx]
 
         results["_hankel_data"] = {
-            "f_valid": f_valid, "omega": omega, "k0": k0, "J_src_valid": J_src_valid,
-            "obs_points": {}
+            "f_valid": f_valid,
+            "omega": omega,
+            "k0": k0,
+            "J_src_valid": J_src_valid,
+            "obs_points": {},
         }
-        
+
         def process_point(name, ez_data, x_idx, y_idx):
             dx_m = nodes_x[x_idx] - nodes_x[cfg.x0]
             dy_m = nodes_y[y_idx] - nodes_y[cfg.y0]
             r = np.sqrt(dx_m**2 + dy_m**2)
-            if r == 0: return
-            
+            if r == 0:
+                return
+
             Ez_sim_f = fft(ez_data, n=n_pad) * cfg.dt
             Ez_sim_valid = Ez_sim_f[band_idx]
             H_sim = Ez_sim_valid / J_src_valid
             H_sim_corrected = H_sim * np.exp(1j * omega * cfg.dt)
             H_analytical = -(omega * cfg.mu0 / 4) * sp_special.hankel2(0, k0 * r)
             results["_hankel_data"]["obs_points"][name] = {
-                "r": r, "H_sim": H_sim_corrected, "H_analytical": H_analytical
+                "r": r,
+                "H_sim": H_sim_corrected,
+                "H_analytical": H_analytical,
             }
 
+        recorders = getattr(cfg, "recorders", ["all"])
+
         process_point("Recorder Full", results["recorder_full"][:, cfg.y1], cfg.x1, cfg.y1)
-        process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
-        process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
-        process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
+        if "all" in recorders or "diag" in recorders:
+            process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
+        if "all" in recorders or "after" in recorders:
+            process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
+        if "all" in recorders or "before" in recorders:
+            process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
+
+        return results["_hankel_data"]
+
+    @staticmethod
+    def verify_with_hankel(results):
+        print("\n--- Plotting Hankel verification ---")
+        hd = SimulationAnalyzer._compute_hankel_data(results)
+        cfg = results["config"]
+        f_valid = hd["f_valid"]
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
         
         ax = axes[0]
-        ax.plot(f_valid, np.abs(J_src_valid) / np.abs(J_src_valid[idx_fc]), label='Source', lw=2, color='lightgray')
+        ax.plot(f_valid, np.abs(hd["J_src_valid"]) / np.abs(hd["J_src_valid"][idx_fc]), label='Source', lw=2, color='lightgray')
         
-        if "Recorder Full" in results["_hankel_data"]["obs_points"]:
-            data_main = results["_hankel_data"]["obs_points"]["Recorder Full"]
+        if "Recorder Full" in hd["obs_points"]:
+            data_main = hd["obs_points"]["Recorder Full"]
             H_sim_c = data_main["H_sim"]
             H_anal = data_main["H_analytical"]
             norm_sim = np.abs(H_sim_c[idx_fc])
@@ -757,6 +786,123 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
+    def _compare_hankel_verification(results_list):
+        base_cfg = results_list[0]["config"]
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        source_plotted = False
+        y_max = 0
+
+        for i, res in enumerate(results_list):
+            hd = SimulationAnalyzer._compute_hankel_data(res)
+            cfg = res["config"]
+            f_valid = hd["f_valid"]
+            idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+            label = getattr(cfg, "label", cfg.solver_type.upper())
+
+            if not source_plotted:
+                axes[0].plot(f_valid, np.abs(hd["J_src_valid"]) / np.abs(hd["J_src_valid"][idx_fc]), label='Source', lw=2, color='lightgray')
+                source_plotted = True
+
+            if "Recorder Full" not in hd["obs_points"]:
+                continue
+
+            label = cfg.solver_type.upper()
+            data_main = hd["obs_points"]["Recorder Full"]
+            H_sim_c = data_main["H_sim"]
+            H_anal = data_main["H_analytical"]
+            norm_sim = np.abs(H_sim_c[idx_fc])
+            norm_anal = np.abs(H_anal[idx_fc])
+            color = colors[i]
+
+            axes[0].plot(f_valid, np.abs(H_sim_c) / norm_sim, label=label, lw=2, color=color)
+            axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_c)), label=label, lw=2, color=color)
+
+            if i == 0:
+                axes[0].plot(f_valid, np.abs(H_anal) / norm_anal, '--', label='Analytical', lw=2, color='black')
+                axes[1].plot(f_valid, np.unwrap(np.angle(H_anal)), '--', label='Analytical', lw=2, color='black')
+
+            y_max = max(y_max, np.max(np.abs(H_sim_c[f_valid < cfg.f_break]) / norm_sim))
+
+        for ax in axes:
+            ax.axvline(base_cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({base_cfg.f_break:.2e} Hz)')
+            ax.axvline(base_cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({base_cfg.f_min:.2e} Hz)')
+            ax.set_xscale('log')
+            ax.legend()
+            ax.grid(True, which='both', alpha=0.3)
+
+        axes[0].set_ylim(0, 1.3 * y_max if y_max > 0 else 1.0)
+        axes[0].set_title(f'Magnitude Response [{base_cfg.solver_type.upper()} vs comparison]')
+        axes[0].set_xlabel('Frequency (Hz)')
+        axes[0].set_ylabel('Normalized Magnitude')
+        axes[1].set_title(f'Phase Response [{base_cfg.solver_type.upper()} vs comparison]')
+        axes[1].set_xlabel('Frequency (Hz)')
+        axes[1].set_ylabel('Phase (rad)')
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def _compare_error_analysis(results_list):
+        base_cfg = results_list[0]["config"]
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        max_val = 0
+        max_phase_error = 0
+        min_phase_error = 0
+
+        for i, res in enumerate(results_list):
+            hd = SimulationAnalyzer._compute_hankel_data(res)
+            cfg = res["config"]
+            f_valid = hd["f_valid"]
+            idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
+            color = colors[i]
+            label = getattr(cfg, "label", cfg.solver_type.upper())
+
+            if "Recorder Full" not in hd["obs_points"]:
+                continue
+
+            data = hd["obs_points"]["Recorder Full"]
+            H_sim, H_anal = data["H_sim"], data["H_analytical"]
+            sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
+            anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
+            rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+
+            mask = (f_valid > cfg.f_min) & (f_valid < cfg.f_break)
+            if np.any(mask):
+                max_val = np.max([max_val, np.max(rel_error[mask])])
+
+            phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
+            phase_diff -= phase_diff[idx_fc]
+            phase_error_deg = np.rad2deg(phase_diff)
+
+            if np.any(mask):
+                min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
+                max_phase_error = np.max([max_phase_error, np.max(phase_error_deg[mask])])
+
+            axes[0].plot(f_valid, rel_error * 100, label=label, lw=1.5, color=color)
+            axes[1].plot(f_valid, phase_error_deg, label=label, lw=1.5, color=color)
+
+        for ax in axes:
+            ax.axvline(base_cfg.f_break, color='red', ls=':', alpha=0.5, label=f'f_break ({base_cfg.f_break:.2e} Hz)')
+            ax.axvline(base_cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c ({base_cfg.f_c:.2e} Hz)')
+            ax.axvline(base_cfg.f_min, color='green', ls=':', alpha=0.5, label=f'f_min ({base_cfg.f_min:.2e} Hz)')
+            ax.set_xscale('log')
+            ax.legend()
+            ax.grid(True, which='both', alpha=0.3)
+
+        axes[0].set_title('Relative Magnitude Error [comparison]')
+        axes[0].set_xlabel('Frequency (Hz)')
+        axes[0].set_ylabel('Relative Error (%)')
+        axes[0].set_ylim(0, 300 * max_val if max_val > 0 else 1.0)
+        axes[1].set_title('Phase Error Dispersion [comparison]')
+        axes[1].set_xlabel('Frequency (Hz)')
+        axes[1].set_ylabel('Phase Error (Degrees)')
+        axes[1].set_ylim(1.5 * min_phase_error, 1.5 * max_phase_error if max_phase_error != 0 else 1.0)
+
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
     def plot_error_analysis(results):
         if "_hankel_data" not in results: return
         hd = results["_hankel_data"]
@@ -766,14 +912,26 @@ class SimulationAnalyzer:
         idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
         colors = plt.cm.tab10(np.linspace(0, 1, 10))
         
+        max_val = 0
+        max_phase_error = 0
+        min_phase_error = 0
+        
         for i, (name, data) in enumerate(hd["obs_points"].items()):
             H_sim, H_anal = data["H_sim"], data["H_analytical"]
             sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
             anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
             rel_error = np.abs(sim_mag - anal_mag) / anal_mag
+            
+            mask = (f_valid > cfg.f_min) & (f_valid < cfg.f_break)
+            max_val = np.max([max_val, np.max(rel_error[mask])])
+            print(max_val)
+            
             phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
             phase_diff -= phase_diff[idx_fc]
             phase_error_deg = np.rad2deg(phase_diff)
+            
+            min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
+            max_phase_error = np.max([max_phase_error, np.max(phase_error_deg[mask])])
             
             axes[0].plot(f_valid, rel_error * 100, label=name, lw=1.5, color=colors[i])
             axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
@@ -789,16 +947,17 @@ class SimulationAnalyzer:
         axes[0].set_title(f'Relative Magnitude Error [{cfg.solver_type.upper()}]')
         axes[0].set_xlabel('Frequency (Hz)')
         axes[0].set_ylabel('Relative Error (%)')
-        
+        axes[0].set_ylim(0, 300 * max_val)
         axes[1].set_title(f'Phase Error Dispersion [{cfg.solver_type.upper()}]')
         axes[1].set_xlabel('Frequency (Hz)')
         axes[1].set_ylabel('Phase Error (Degrees)')
-        
+        axes[1].set_ylim(1.5 * min_phase_error, 1.5 * max_phase_error)
+
         plt.tight_layout()
         plt.show()
 
     @staticmethod
-    def plot_2d_animation(results, fps=40):
+    def plot_2d_animation(results, fps=40, color_sensitivity=0.001):
         cfg = results["config"]
         hist = results["history"]
         nodes_x = np.concatenate(([0], np.cumsum(cfg.dx)))[:cfg.nx]
@@ -809,16 +968,22 @@ class SimulationAnalyzer:
         ax.set_facecolor('black')
         
         z_norm = np.array(results["z_norm"]) # Using fetched z_norm
-        vmax = np.max(np.abs(hist * z_norm)) * 0.8
+        vmax = np.max(np.abs(hist * z_norm)) * 0.8 * color_sensitivity
         if vmax == 0:
             vmax = 1e-4
         quad = ax.pcolormesh(X, Y, (hist[0] * z_norm).T, shading='nearest', cmap='RdBu_r', vmin=-vmax, vmax=vmax, zorder=1)
-                             
+                 
+        recorders = getattr(cfg, "recorders", ["all"])         
+                    
         scat1 = ax.scatter(nodes_x[cfg.x0], nodes_y[cfg.y0], color='red', s=20, zorder=2, label='Source')
         scat2 = ax.scatter(nodes_x[cfg.x1], nodes_y[cfg.y1], color='green', s=20, zorder=2, label='Recorder')
-        scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
-        scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
-        scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
+        
+        if "all" in recorders or "diag" in recorders:
+            scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
+        if "all" in recorders or "after" in recorders:
+            scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
+        if "all" in recorders or "before" in recorders:
+            scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
         
         ax.legend(loc='upper right', fontsize=8)
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
@@ -828,7 +993,18 @@ class SimulationAnalyzer:
             frame_data = (hist[i] * z_norm).T
             quad.set_array(frame_data.ravel())
             time_text.set_text(f'Frame {i*fs}/{cfg.nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
-            return quad, time_text, scat1, scat2, scat3, scat4, scat5
+            out = [quad, time_text, scat1, scat2]
+
+            if "all" in recorders or "diag" in recorders:
+                out.append(scat3)
+
+            if "all" in recorders or "after" in recorders:
+                out.append(scat4)
+
+            if "all" in recorders or "before" in recorders:
+                out.append(scat5)
+
+            return tuple(out)
 
         interval_ms = max(1, int(1000 / fps))
         ani = FuncAnimation(fig, update, frames=len(hist), interval=interval_ms, blit=True)
@@ -843,7 +1019,8 @@ class SimulationAnalyzer:
             cfg = res["config"]
             t = res["times"]
             ez = res["recorder_full"][:, cfg.y1]
-            ax.plot(t * 1e9, ez, label=cfg.solver_type.upper(), lw=1.5)
+            label = getattr(cfg, "label", cfg.solver_type.upper())
+            ax.plot(t * 1e9, ez, label=label, lw=1.5)
         ax.set_xlabel("Time (ns)")
         ax.set_ylabel("Ez Amplitude")
         ax.set_title("Recorder Comparison")
@@ -852,40 +1029,155 @@ class SimulationAnalyzer:
         plt.tight_layout()
         plt.show()
 
+        if results_list:
+            SimulationAnalyzer._compare_hankel_verification(results_list)
+            SimulationAnalyzer._compare_error_analysis(results_list)
+
 # ==============================================================================
 # Execution Example
 # ==============================================================================
 if __name__ == "__main__":
-    t0 = time.time()
-    res_fci = SimulationRunner.execute(
-        solver_type = "fci",
-        frame_skip = 10,
-        finesse = 9,
-        free_space_sim = True,
-        grid_refinement = False,
-        do_hankel = True,
-    )
-    t1 = time.time()
-    print(f"FCI executed in {t1-t0:.2f} seconds.")
+    
+    Compare_FCI_YEE = False
+    if Compare_FCI_YEE:
+        t0 = time.time()
+        res_fci_schur = SimulationRunner.execute(
+            solver_type = "fci",
+            frame_skip = 10,
+            finesse = 15,
+            free_space_sim = True,
+            grid_refinement = False,
+            do_hankel = True,
+            recorders = ["after"],
+            label = "FCI (Schur)"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
 
-    # SimulationAnalyzer.verify_with_hankel(res_fci)
-    # SimulationAnalyzer.plot_error_analysis(res_fci)
-    SimulationAnalyzer.plot_2d_animation(res_fci)
+        SimulationAnalyzer.plot_2d_animation(res_fci_schur)
 
-    t0 = time.time()
-    res_yee = SimulationRunner.execute(
-        solver_type="yee",
-        frame_skip=10,
-        finesse=9,
-        free_space_sim=True,
-        do_hankel=True,
-    )
-    t1 = time.time()
-    print(f"YEE executed in {t1-t0:.2f} seconds.")
+        t0 = time.time()
+        res_yee = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=9,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee)
+        
+        SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
+    
+    Compare_Grid_Refinement_YEE = False
+    
+    if Compare_Grid_Refinement_YEE:
+        t0 = time.time()
+        res_yee_10 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_10)
+        
+        t0 = time.time()
+        res_yee_20 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=20,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/20$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_20)
+        
+        t0 = time.time()
+        res_yee_30 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/30$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee_30)      
+        SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
 
-    # SimulationAnalyzer.verify_with_hankel(res_yee)
-    # SimulationAnalyzer.plot_error_analysis(res_yee)
-    SimulationAnalyzer.plot_2d_animation(res_yee)
+    Compare_Grid_Refinement_FCI = True
+    
+    if Compare_Grid_Refinement_FCI:
+        t0 = time.time()
+        res_fci_10 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_10)
+        
+        t0 = time.time()
+        res_fci_20 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=20,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/20$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_20)
+        
+        t0 = time.time()
+        res_fci_30 = SimulationRunner.execute(
+            solver_type="fci",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/30$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_30)      
+        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
-    SimulationAnalyzer.compare_recorders(res_fci, res_yee)
+    
 
+    
