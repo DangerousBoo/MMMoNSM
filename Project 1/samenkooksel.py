@@ -797,9 +797,15 @@ class SimulationAnalyzer:
             if np.any(mask):
                 max_val = np.max([max_val, np.max(rel_error[mask])])
 
+            rms_rel_error = np.sqrt(np.mean(rel_error[mask]**2)) if np.any(mask) else 0
+            print(f"{label}: RMS Relative Error in valid band = {np.round(rms_rel_error*100, 2)}%")
+
             phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
             phase_diff -= phase_diff[idx_fc]
             phase_error_deg = np.rad2deg(phase_diff)
+            
+            rms_phase_error = np.sqrt(np.mean(phase_error_deg[mask]**2)) if np.any(mask) else 0
+            print(f"{label}: RMS Phase Error in valid band = {np.round(rms_phase_error, 2)} degrees")
 
             if np.any(mask):
                 min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
@@ -964,13 +970,13 @@ class SimulationAnalyzer:
 # ==============================================================================
 if __name__ == "__main__":
     
-    Compare_FCI_YEE = True
+    Compare_FCI_YEE = False
     if Compare_FCI_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
             solver_type = "fci",
             frame_skip = 10,
-            finesse = 15,
+            finesse = 10,
             free_space_sim = True,
             grid_refinement = 'step',
             do_hankel = True,
@@ -986,7 +992,7 @@ if __name__ == "__main__":
         res_yee = SimulationRunner.execute(
             solver_type="yee",
             frame_skip=10,
-            finesse=9,
+            finesse=10,
             free_space_sim=True,
             do_hankel=True,
             grid_refinement = False,
@@ -1000,7 +1006,7 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
     
-    Compare_Grid_Refinement_YEE = False
+    Compare_Grid_Refinement_YEE = True
     
     if Compare_Grid_Refinement_YEE:
         t0 = time.time()
