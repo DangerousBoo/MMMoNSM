@@ -1013,6 +1013,47 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
+    def plot_1d_intensity(results, fps=40):
+        """1D intensity animation of Ez² at the recorder plane (x = x1) over time."""
+        cfg = results["config"]
+        rec = results["recorder"]          # shape: (n_frames, ny) — frame-skipped
+        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))[:cfg.ny + 1]
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        max_int = np.max(rec ** 2) or 1.0
+        line, = ax.plot([], [], color='red', lw=2)
+
+        ax.set_xlim(nodes_y.min(), nodes_y.max())
+        ax.set_ylim(0, max_int * 1.2)
+        ax.set_xlabel("Y-position (m)")
+        ax.set_ylabel("Ez² Intensity")
+
+        # Shade waveguide layers if geometry info is available
+        if all(hasattr(cfg, a) for a in ("n_air", "n_clad", "n_core")):
+            ny_a = int(cfg.n_air)
+            ny_c = int(cfg.n_clad)
+            ny_k = int(cfg.n_core)
+            ax.axvspan(nodes_y[ny_a],           nodes_y[ny_a + ny_c],              color='yellow', alpha=0.12, label='Cladding')
+            ax.axvspan(nodes_y[ny_a + ny_c],    nodes_y[ny_a + ny_c + ny_k],       color='blue',   alpha=0.12, label='Core')
+            ax.axvspan(nodes_y[ny_a + ny_c + ny_k], nodes_y[ny_a + 2*ny_c + ny_k],color='yellow', alpha=0.12)
+            ax.legend(fontsize=8)
+
+        time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontweight='bold')
+        fs = results["frame_skip"]
+        nt = cfg.nt
+
+        def update(i):
+            line.set_data(nodes_y[:rec.shape[1]], rec[i, :] ** 2)
+            time_text.set_text(f'Intensity | Frame {i*fs}/{nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
+            return line, time_text
+
+        interval_ms = max(1, int(1000 / fps))
+        ani = FuncAnimation(fig, update, frames=len(rec), interval=interval_ms, blit=True)
+        results["ani_1d"] = ani
+        ax.set_title(f"1D Ez² at Recorder Plane x=x1 ({cfg.solver_type.upper()})")
+        plt.show()
+
+    @staticmethod
     def compare_recorders(*results_list):
         fig, ax = plt.subplots(figsize=(10, 4))
         for res in results_list:
@@ -1075,7 +1116,7 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
     
-    Compare_Grid_Refinement_YEE = True
+    Compare_Grid_Refinement_YEE = False
     
     if Compare_Grid_Refinement_YEE:
         t0 = time.time()
@@ -1179,41 +1220,22 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
-    Compare_Schur_vs_default = True
-    
-    if Compare_Schur_vs_default:
+    Plot1D_Animation = True
+    if Plot1D_Animation == True:
         t0 = time.time()
-        res_fci_10 = SimulationRunner.execute(
-            solver_type="fci",
-            schur = False,
-            frame_skip=10,
-            finesse=10,
-            free_space_sim=True,
-            do_hankel=True,
-            grid_refinement = False,
-            recorders=["after"],
-            label = r"FCI $\lambda/10$"
+        res_yee_grad = SimulationRunner.execute(
+            solver_type = "yee",
+            frame_skip = 10,
+            finesse = 20,
+            free_space_sim = False,
+            grid_refinement = 'gradual',
+            do_hankel = False,
+            recorders = ["after"],
+            label = "YEE Gradual"
         )
         t1 = time.time()
-        print(f"FCI executed in {t1-t0:.2f} seconds.")
-        
-        SimulationAnalyzer.plot_2d_animation(res_fci_10)
-        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_10)
-        t0 = time.time()
-        res_fci_20 = SimulationRunner.execute(
-            solver_type="fci",
-            schur = False,
-            frame_skip=10,
-            finesse=10,
-            free_space_sim=True,
-            do_hankel=True,
-            grid_refinement = False,
-            recorders=["after"],
-            label = r"FCI $\lambda/20$"
-        )
-        t1 = time.time()
-        print(f"FCI executed in {t1-t0:.2f} seconds.")
-        
-        SimulationAnalyzer.plot_2d_animation(res_fci_20)
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+
+        SimulationAnalyzer.plot_1d_intensity(res_yee_grad)
 
     
