@@ -42,7 +42,7 @@ class SimulationConfig:
         self.f_break = 2 * self.f_c
         
         # Dimensions expressed in amount of wavelengths
-        f = 1.5
+        f = 1
         self.L_wg   = f * 6 * self.lam_c
         self.w_core = f * 1 * self.lam_c
         self.w_clad = f * 1 * self.lam_c
@@ -515,10 +515,78 @@ class FCISolver:
             [None, None, None, None, None, None, R87,  R88 ]  # jz
         ], format='csc')
 
-        # TODO: replace with extended Schur complement (eliminate jz, ez, ez_dot analytically,
-        # leaving a single Nx*Ny Helmholtz-like solve for ez_ddot)
-        print("Pre-factoring system (full LU)...")
-        self.solve_func = spla.factorized(self.LHS.tocsc())
+        if not self.cfg.schur:
+            print("Pre-factoring system (full LU)...")
+            self.solve_func = spla.factorized(self.LHS.tocsc())
+        else:
+            print("Pre-factoring system (Schur complement)...")
+            # Get blocks
+            
+            M12 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy]
+            M21 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:]
+            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:]
+            
+            # Compute inverse of M11
+            L11_inv = diag(1.0/L11.diagonal())
+            L22_inv = spla.spsolve(L22.tocsc(), sp.eye(L22.shape[0], format='csc'), permc_spec='COLAMD')
+            L33_inv = diag(1.0/L33.diagonal())
+            L44_inv = spla.spsolve(L44.tocsc(), sp.eye(L44.shape[0], format='csc'), permc_spec='COLAMD')
+
+            M11_inv = sp.bmat([
+                [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
+                [None,      L22_inv,                  None,       None],
+                [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
+                [None,      None,                     None,       L44_inv]
+            ], format='csc')
+
+            # Compute inverse of Schur complement using Schur 
+            S_12 = M22[:2*self.len_ez, 2*self.len_ez:]
+            S_21 = sp.bmat([
+                [-L71 @ L11_inv @ L12 @ L22_inv @ L25 - L73 @ L33_inv @ L34 @ L44_inv @ L45, None],
+                [sp.eye(self.len_ez, format='csc') * 0, None]
+            ], format='csc')
+            S_22 = M22[2*self.len_ez:, 2*self.len_ez:]
+
+            # invert S_11 =  [L55, L56],
+            #                [0,   L66]
+            L55_inv = diag(1.0/L55.diagonal())
+            L66_inv = diag(1.0/L66.diagonal())
+
+            S_11_inv = sp.bmat([
+                [L55_inv, L55_inv @ L56 @ L66_inv],
+                [None, L66_inv]
+            ], format='csc')
+
+            # Do schur once more
+            L88_inv = diag(1.0/L88.diagonal())
+
+            S2 = L77 - S_12[:self.len_ez, :self.len_ez] @ L55_inv @ L56 @ L66_inv @ L67 - L78 @ L88_inv @ L87
+
+            S2_inv = spla.spsolve(S2.tocsc(), sp.eye(S2.shape[0], format='csc'), permc_spec='COLAMD')
+
+            S1_inv = sp.bmat([
+                [S2_inv, -S2_inv @ L78 @ L88_inv],
+                [-L88_inv @ L87 @ S2_inv, L88_inv + L88_inv @ L87 @ S2_inv @ L78 @ L88_inv]
+            ], format='csc')
+            
+            S_inv = sp.bmat([
+                [S_11_inv + S_11_inv @ S_12 @ S1_inv @ S_21 @ S_11_inv, -S_11_inv @ S_12 @ S1_inv],
+                [-S1_inv @ S_21 @ S_11_inv, S1_inv]
+            ], format='csc')
+
+
+            def schur_solve(b):
+                b1 = b[:2*self.len_hx + 2*self.len_hy]
+                b2 = b[2*self.len_hx + 2*self.len_hy:]
+
+                u2 = S_inv @ (b2 - M21 @ M11_inv @ b1)
+                u1 = M11_inv @ (b1 - M12 @ u2)
+                u = np.concatenate([u1, u2])
+
+                return u
+            
+            self.solve_func = schur_solve
+        
 
     def step(self, t):
         b = self.RHS.dot(self.u)
@@ -542,7 +610,7 @@ class SimulationRunner:
     def execute(frame_skip=3, **kwargs):
         config = SimulationConfig(**kwargs)
         if config.solver_type == "fci":
-            print("Initializing FCI Solver (Schur/Sparse)...")
+            print("Initializing FCI Solver...")
             solver = FCISolver(config)
         else:
             print("Initializing standard Yee Solver...")
@@ -968,11 +1036,11 @@ if __name__ == "__main__":
     if Compare_FCI_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
-            solver_type = "fci",
+            solver_type = "yee",
             frame_skip = 10,
             finesse = 15,
             free_space_sim = True,
-            grid_refinement = 'step',
+            grid_refinement = 'gradual',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI (Schur)"
@@ -984,7 +1052,8 @@ if __name__ == "__main__":
 
         t0 = time.time()
         res_yee = SimulationRunner.execute(
-            solver_type="yee",
+            solver_type="fci",
+            schur = False,
             frame_skip=10,
             finesse=9,
             free_space_sim=True,
@@ -1104,6 +1173,41 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
+    Compare_Schur_vs_default = True
     
+    if Compare_Schur_vs_default:
+        t0 = time.time()
+        res_fci_10 = SimulationRunner.execute(
+            solver_type="fci",
+            schur = False,
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_10)
+        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_10)
+        t0 = time.time()
+        res_fci_20 = SimulationRunner.execute(
+            solver_type="fci",
+            schur = False,
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"FCI $\lambda/20$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_20)
 
     
