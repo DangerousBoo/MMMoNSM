@@ -1157,7 +1157,7 @@ if __name__ == "__main__":
         res_yee_grad = SimulationRunner.execute(
             solver_type = "yee",
             frame_skip = 10,
-            finesse = 10,
+            finesse = 20,
             free_space_sim = False,
             grid_refinement = 'gradual',
             do_hankel = False,
