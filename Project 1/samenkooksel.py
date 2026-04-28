@@ -55,12 +55,12 @@ class SimulationConfig:
         self.w_air  = f * 0.5 * self.lam_c
         self.d      = f * 2 * self.lam_c
         self.t_m    = f * 0.01 * self.lam_c
-        self.Ll     = f * 0.8 * self.lam_c
+        self.Ll     = f * 0.5 * self.lam_c
         self.Lr     = f * 1 * self.lam_c
         self.wall_count = 2 if self.double_wall else 1
         self.L      = self.Ll + self.d + self.wall_count * self.t_m + self.L_wg + self.Lr
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core
-        self.T      = self.t0 + 3*self.sig_t + (self.d + self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
+        self.T      = self.t0 + 4*self.sig_t + (self.d + self.wall_count * self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
         self.finesse = kwargs.get("finesse", 30)
 
             
@@ -100,6 +100,12 @@ class SimulationConfig:
         pml_offset_y = float(np.sum(self.dy[:self.n_pml])) if self.n_pml > 0 else 0.0
         self.pml_offset_x = pml_offset_x
         self.pml_offset_y = pml_offset_y
+        self.x_nodes = np.concatenate(([0.0], sum_dx))
+        self.y_nodes = np.concatenate(([0.0], np.cumsum(self.dy)))
+        self.x_nodes_phys = self.x_nodes - self.pml_offset_x
+        self.y_nodes_phys = self.y_nodes - self.pml_offset_y
+        self.y_region_spans_phys = self._build_y_region_spans(physical=True)
+        self.y_region_spans_index = self._build_y_region_spans(physical=False)
         post_wg_offset = self.wall_count * self.t_m
         
         self.x1 = self.x0 + kwargs["x1"] if "x1" in kwargs else np.argmin(np.abs(sum_dx - (pml_offset_x + self.Ll + self.d + post_wg_offset + self.L_wg + 0.1*self.Lr)))
@@ -118,9 +124,11 @@ class SimulationConfig:
 
         self.x_after = getattr(self, "x_after", np.argmin(np.abs(sum_dx - (pml_offset_x + self.Ll + self.d + post_wg_offset + self.L_wg))))
         self.y_after = getattr(self, "y_after", self.y0)
-        self.x_before = getattr(self, "x_before", np.argmin(np.abs(sum_dx - (pml_offset_x + self.Ll+ self.d))))
-        self.y_before = getattr(self, "y_before", self.y0)
+        self.x_start = getattr(self, "x_start", np.argmin(np.abs(sum_dx - (pml_offset_x + self.Ll+ self.d + self.t_m + 0.1*self.L_wg))))
+        self.y_start = getattr(self, "y_start", self.y0)
 
+        self.T_start = self.t0 + 4*self.sig_t + (self.d + self.t_m + 0.1*self.L_wg*self.eps_core**(1/2)) / self.c
+        
         self.dx_d = np.concatenate(([self.dx[0]/2], (self.dx[:-1] + self.dx[1:])/2, [self.dx[-1]/2]))
         self.dy_d = np.concatenate(([self.dy[0]/2], (self.dy[:-1] + self.dy[1:])/2, [self.dy[-1]/2]))
         
@@ -220,7 +228,7 @@ class SimulationConfig:
                 np.full(self.n_air, self.w_air / self.n_air)
             ])
         elif self.grid_refinement == "gradual":    
-            self.L_f_ac, self.n_f_ac = self._L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha)
+            self.L_f_ac, self.n_f_ac = self._L_and_n_fine(self.dy_0, self.dy_0 / np.sqrt(self.eps_clad), self.alpha, max_length=self.w_air)
             self.n_air = int(np.ceil(self.w_air / self.dy_0 - self.L_f_ac / self.dy_0)) + self.n_f_ac
             
             if self.wg_type == "step":
@@ -363,6 +371,45 @@ class SimulationConfig:
         # The tapered section uses cell lengths d_fine * alpha^k for k = 1..n_f.
         # Sum that geometric series so the coarse remainder fits the intended width.
         return L_f, n_f
+
+    def _build_y_region_spans(self, physical=True):
+        """Return shaded y-intervals for the full left-to-right stack."""
+        edges = self.y_nodes_phys if physical else self.y_nodes
+        pml = int(getattr(self, "n_pml", 0))
+        n_air = int(getattr(self, "n_air", 0))
+        n_clad = int(getattr(self, "n_clad", 0))
+        n_core = int(getattr(self, "n_core", 0))
+
+        sequence = [
+            ("PML", pml, "gray", 0.08),
+            ("Air", n_air, "#9fd3c7", 0.10),
+            ("Cladding", n_clad, "yellow", 0.12),
+            ("Core", n_core, "blue", 0.12),
+            ("Cladding", n_clad, "yellow", 0.12),
+            ("Air", n_air, "#9fd3c7", 0.10),
+            ("PML", pml, "gray", 0.08),
+        ]
+
+        spans = []
+        cursor = 0
+        seen_labels = set()
+
+        for label, count, color, alpha in sequence:
+            next_cursor = cursor + count
+            if next_cursor > len(edges) - 1:
+                break
+            if count > 0:
+                spans.append({
+                    "left": float(edges[cursor]),
+                    "right": float(edges[next_cursor]),
+                    "color": color,
+                    "alpha": alpha,
+                    "label": label if label not in seen_labels else None,
+                })
+                seen_labels.add(label)
+            cursor = next_cursor
+
+        return spans
     
     def _setup_waveguide(self):
         if self.free_space_sim:
@@ -768,8 +815,8 @@ class SimulationRunner:
             rec_diag = np.zeros(config.nt, dtype=np.float32)
         if "all" in recorders or "after" in recorders:
             rec_after = np.zeros(config.nt, dtype=np.float32)
-        if "all" in recorders or "before" in recorders:
-            rec_before = np.zeros(config.nt, dtype=np.float32)
+        if "all" in recorders or "start" in recorders:
+            rec_start = np.zeros(config.nt, dtype=np.float32)
         
         frame_idx = 0
         for it in tqdm(range(config.nt), desc=f"Simulating (nt={config.nt}, solver={config.solver_type})"):
@@ -777,14 +824,14 @@ class SimulationRunner:
             solver.step(t)
             
             recorder_full[it, :] = solver.Ez[config.x1, :]
-            recorder_start_full[it, :] = solver.Ez[config.x_before, :]
+            recorder_start_full[it, :] = solver.Ez[config.x_start, :]
             
             if "all" in recorders or "diag" in recorders:
                 rec_diag[it] = solver.Ez[config.x_diag, config.y_diag]
             if "all" in recorders or "after" in recorders:
                 rec_after[it] = solver.Ez[config.x_after, config.y_after]
-            if "all" in recorders or "before" in recorders:
-                rec_before[it] = solver.Ez[config.x_before, config.y_before]
+            if "all" in recorders or "start" in recorders:
+                rec_start[it] = solver.Ez[config.x_start, config.y_start]
             
             if it % frame_skip == 0 and frame_idx < n_frames:
                 field_history[frame_idx] = solver.Ez
@@ -807,8 +854,8 @@ class SimulationRunner:
         if "all" in recorders or "after" in recorders:
             result["rec_after"] = rec_after
 
-        if "all" in recorders or "before" in recorders:
-            result["rec_before"] = rec_before
+        if "all" in recorders or "start" in recorders:
+            result["rec_start"] = rec_start
 
         return result
 
@@ -816,6 +863,15 @@ class SimulationRunner:
 # 4. Simulation Analyzer
 # ==============================================================================
 class SimulationAnalyzer:
+    @staticmethod
+    def _y_axis_with_layers(cfg, physical=True):
+        y_nodes = getattr(cfg, "y_nodes_phys" if physical else "y_nodes", None)
+        if y_nodes is None:
+            y_nodes = np.concatenate(([0.0], np.cumsum(cfg.dy)))
+            if physical:
+                y_nodes = y_nodes - float(np.sum(cfg.dy[: int(getattr(cfg, "n_pml", 0))]))
+        return y_nodes, getattr(cfg, "y_region_spans_phys" if physical else "y_region_spans_index", [])
+
     @staticmethod
     def _compute_hankel_data(results):
         if "_hankel_data" in results:
@@ -871,8 +927,8 @@ class SimulationAnalyzer:
             process_point("Obs Diag", results["rec_diag"], cfg.x_diag, cfg.y_diag)
         if "all" in recorders or "after" in recorders:
             process_point("Obs After", results["rec_after"], cfg.x_after, cfg.y_after)
-        if "all" in recorders or "before" in recorders:
-            process_point("Obs Before", results["rec_before"], cfg.x_before, cfg.y_before)
+        if "all" in recorders or "start" in recorders:
+            process_point("Obs start", results["rec_start"], cfg.x_start, cfg.y_start)
 
         return results["_hankel_data"]
 
@@ -1167,8 +1223,8 @@ class SimulationAnalyzer:
             scat3 = ax.scatter(nodes_x[cfg.x_diag], nodes_y[cfg.y_diag], color='cyan', s=30, zorder=2, marker='x', label='Obs Diag')
         if "all" in recorders or "after" in recorders:
             scat4 = ax.scatter(nodes_x[cfg.x_after], nodes_y[cfg.y_after], color='magenta', s=30, zorder=2, marker='x', label='Obs After')
-        if "all" in recorders or "before" in recorders:
-            scat5 = ax.scatter(nodes_x[cfg.x_before], nodes_y[cfg.y_before], color='yellow', s=30, zorder=2, marker='x', label='Obs Before')
+        if "all" in recorders or "start" in recorders:
+            scat5 = ax.scatter(nodes_x[cfg.x_start], nodes_y[cfg.y_start], color='yellow', s=30, zorder=2, marker='x', label='Obs start')
         
         ax.legend(loc='upper right', fontsize=8)
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, color='black', fontweight='bold')
@@ -1186,7 +1242,7 @@ class SimulationAnalyzer:
             if "all" in recorders or "after" in recorders:
                 out.append(scat4)
 
-            if "all" in recorders or "before" in recorders:
+            if "all" in recorders or "start" in recorders:
                 out.append(scat5)
 
             return tuple(out)
@@ -1244,21 +1300,8 @@ class SimulationAnalyzer:
         ax2.set_ylabel("Spacing (m)")
         ax2.grid(True, alpha=0.3)
 
-        if all(hasattr(cfg, a) for a in ("n_air", "n_clad", "n_core")):
-            pml = int(getattr(cfg, "n_pml", 0))
-            left_air = pml
-            left_clad = left_air + int(cfg.n_air)
-            core_start = left_clad + int(cfg.n_clad)
-            core_end = core_start + int(cfg.n_core)
-            right_clad = core_end + int(cfg.n_clad)
-            right_air = right_clad + int(cfg.n_air)
-
-            if pml > 0:
-                ax2.axvspan(0, pml, color='gray', alpha=0.08, label='PML')
-                ax2.axvspan(len(cfg.dy) - pml, len(cfg.dy), color='gray', alpha=0.08)
-            ax2.axvspan(left_air, left_clad, color='yellow', alpha=0.1, label='Cladding')
-            ax2.axvspan(core_start, core_end, color='blue', alpha=0.1, label='Core')
-            ax2.axvspan(core_end, right_clad, color='yellow', alpha=0.1)
+        for region in getattr(cfg, "y_region_spans_index", []):
+            ax2.axvspan(region["left"], region["right"], color=region["color"], alpha=region["alpha"], label=region["label"])
 
         ax1.legend()
         ax2.legend()
@@ -1270,7 +1313,7 @@ class SimulationAnalyzer:
         """1D intensity animation of Ez² at the recorder plane (x = x1) over time."""
         cfg = results["config"]
         rec = results["recorder"]          # shape: (n_frames, ny) — frame-skipped
-        nodes_y = np.concatenate(([0], np.cumsum(cfg.dy)))[:cfg.ny + 1]
+        nodes_y, spans = SimulationAnalyzer._y_axis_with_layers(cfg, physical=True)
 
         label = getattr(cfg, "label", cfg.solver_type.upper())
         
@@ -1283,14 +1326,9 @@ class SimulationAnalyzer:
         ax.set_xlabel("Y-position (m)")
         ax.set_ylabel("Ez² Intensity")
 
-        # Shade waveguide layers if geometry info is available
-        if all(hasattr(cfg, a) for a in ("n_air", "n_clad", "n_core")):
-            ny_a = int(cfg.n_air)
-            ny_c = int(cfg.n_clad)
-            ny_k = int(cfg.n_core)
-            ax.axvspan(nodes_y[ny_a],           nodes_y[ny_a + ny_c],              color='yellow', alpha=0.12, label='Cladding')
-            ax.axvspan(nodes_y[ny_a + ny_c],    nodes_y[ny_a + ny_c + ny_k],       color='blue',   alpha=0.12, label='Core')
-            ax.axvspan(nodes_y[ny_a + ny_c + ny_k], nodes_y[ny_a + 2*ny_c + ny_k],color='yellow', alpha=0.12)
+        for region in spans:
+            ax.axvspan(region["left"], region["right"], color=region["color"], alpha=region["alpha"], label=region["label"])
+        if spans:
             ax.legend(fontsize=8)
 
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontweight='bold')
@@ -1313,7 +1351,8 @@ class SimulationAnalyzer:
         """Plot the exit time-integrated energy profile normalized per result.
 
         The plotted curve is the recorder at x=x1 integrated over time and then
-        normalized by its own total integrated energy over y.
+        normalized by the total integrated energy entering the waveguide at its
+        beginning.
         """
         if len(results_list) == 1 and isinstance(results_list[0], (list, tuple)):
             results_list = tuple(results_list[0])
@@ -1321,45 +1360,58 @@ class SimulationAnalyzer:
             raise ValueError("plot_cumulative_energy_flux requires at least one results dict.")
 
         first_cfg = results_list[0]["config"]
-        first_y_nodes = np.concatenate(([0], np.cumsum(first_cfg.dy)))
+        first_y_nodes, spans = SimulationAnalyzer._y_axis_with_layers(first_cfg, physical=True)
         first_lam = getattr(first_cfg, "lam_c", 1.0) or 1.0
         first_y_nodes_lambda = first_y_nodes / first_lam
 
         fig, ax = plt.subplots(figsize=(10, 4))
 
-        # Restore layer shading to indicate waveguide regions.
-        if all(hasattr(first_cfg, a) for a in ("n_air", "n_clad", "n_core")):
-            ny_a = int(first_cfg.n_air)
-            ny_c = int(first_cfg.n_clad)
-            ny_k = int(first_cfg.n_core)
-            if ny_a + 2 * ny_c + ny_k < len(first_y_nodes_lambda):
-                ax.axvspan(first_y_nodes_lambda[ny_a], first_y_nodes_lambda[ny_a + ny_c], color='yellow', alpha=0.12, label='Cladding')
-                ax.axvspan(first_y_nodes_lambda[ny_a + ny_c], first_y_nodes_lambda[ny_a + ny_c + ny_k], color='blue', alpha=0.12, label='Core')
-                ax.axvspan(first_y_nodes_lambda[ny_a + ny_c + ny_k], first_y_nodes_lambda[ny_a + 2 * ny_c + ny_k], color='yellow', alpha=0.12)
+        for region in spans:
+            ax.axvspan(region["left"] / first_lam, region["right"] / first_lam, color=region["color"], alpha=region["alpha"], label=region["label"])
 
         for res in results_list:
             cfg = res["config"]
-            y_nodes = np.concatenate(([0], np.cumsum(cfg.dy)))
+            y_nodes = getattr(cfg, "y_nodes_phys", None)
+            if y_nodes is None:
+                y_nodes = np.concatenate(([0], np.cumsum(cfg.dy)))
+                y_nodes = y_nodes - float(np.sum(cfg.dy[: int(getattr(cfg, "n_pml", 0))]))
             y = y_nodes[:res["recorder_full"].shape[1]]
-            y_lambda = y / (getattr(cfg, "lam_c", 1.0) or 1.0)
+            y_lambda = y / (getattr(cfg, "lam_c", 1.0))
+
+            eps_r = np.asarray(getattr(cfg, "epsilon_r", np.ones((1, y.size))))
 
             end_rec = res["recorder_full"]
             end_signal = end_rec ** 2 if use_squared else end_rec
             end_profile = np.trapezoid(end_signal, dx=cfg.dt, axis=0)
 
-            # Normalize in the same coordinate used for plotting to avoid
-            # wavelength-dependent scaling artifacts.
-            end_total_energy = np.trapezoid(end_profile, x=y_lambda)
-            if end_total_energy == 0:
-                end_total_energy = 1.0
-            end_profile_normalized = end_profile / end_total_energy
+            start_rec = res.get("recorder_start_full")
+            if start_rec is None:
+                raise KeyError("plot_cumulative_energy_flux requires 'recorder_start_full' to normalize the end profile.")
+            start_signal = start_rec ** 2 if use_squared else start_rec
+            
+            nt_start = int(cfg.T_start/(cfg.dt))
+            start_profile = np.trapezoid(start_signal[:nt_start], dx=cfg.dt, axis=0)
+
+            end_x_idx = int(getattr(cfg, "x1", 0))
+            start_x_idx = int(getattr(cfg, "x_start", end_x_idx))
+            end_eps_r = np.asarray(eps_r[min(end_x_idx, eps_r.shape[0] - 1), :y.size])
+            start_eps_r = np.asarray(eps_r[min(start_x_idx, eps_r.shape[0] - 1), :y.size])
+
+            end_profile_weighted = end_profile * end_eps_r
+            start_profile_weighted = start_profile * start_eps_r
+            
+            output_total_energy = np.trapezoid(end_profile_weighted, x=y_lambda)
+            input_total_energy = np.trapezoid(start_profile_weighted, x=y_lambda)
+            if input_total_energy == 0:
+                input_total_energy = 1.0
+            end_profile_normalized = end_profile_weighted / input_total_energy
 
             label = getattr(cfg, "label", cfg.solver_type.upper())
-            ax.plot(y_lambda, end_profile_normalized, lw=2, label=label)
+            ax.plot(y_lambda, end_profile_normalized, lw=2, label=f"{label} | Energy kept: {output_total_energy/input_total_energy:.2%}")
 
         ax.set_xlabel(r"Relative position $y / \lambda_c$")
         ax.set_ylabel(r"Normalized $\int E_z(y,t)^2\,dt$")
-        ax.set_title("Exit integrated energy profile (self-normalized)")
+        ax.set_title("Exit integrated energy profile (normalized by input energy)")
         ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
@@ -1639,12 +1691,11 @@ if __name__ == "__main__":
         SimulationAnalyzer.compare_recorders(res_yee_false, res_yee_step, res_yee_gradual)
 
     Grin_vs_step_Yee = True
-    if Grin_vs_step_Yee:
+    if Grin_vs_step_Yee: 
         t0 = time.time()
         res_step = SimulationRunner.execute(
             solver_type = "yee",
             frame_skip = 10,
-            eps_core = 2.5**2,
             finesse = 20,
             free_space_sim = False,
             grid_refinement = 'gradual',
@@ -1660,7 +1711,6 @@ if __name__ == "__main__":
         res_grin = SimulationRunner.execute(
             solver_type = "yee",
             deps_max = 0.4,
-            eps_core = 2.5**2,
             frame_skip = 10,
             finesse = 20,
             free_space_sim = False,
@@ -1675,7 +1725,6 @@ if __name__ == "__main__":
 
         SimulationAnalyzer.plot_2d_animation(res_step)
         SimulationAnalyzer.plot_2d_animation(res_grin)
-        SimulationAnalyzer.plot_eps_r_colormap(res_step, res_grin)
         SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin)
 
     Wavelength_Sweep_Yee = False
@@ -1686,7 +1735,7 @@ if __name__ == "__main__":
             solver_type = "yee",
             frame_skip = 10,
             eps_core = 2.5**2,
-            finesse = 10,
+            finesse = 20,
             double_wall = False,
             free_space_sim = False,
             grid_refinement = 'gradual',
@@ -1704,7 +1753,7 @@ if __name__ == "__main__":
             solver_type = "yee",
             frame_skip = 10,
             eps_core = 2.5**2,
-            finesse = 10,
+            finesse = 20,
             free_space_sim = False,
             grid_refinement = 'gradual',
             wg_type = 'step',
@@ -1721,7 +1770,7 @@ if __name__ == "__main__":
             solver_type = "yee",
             frame_skip = 10,
             eps_core = 2.5**2,
-            finesse = 10,
+            finesse = 20,
             free_space_sim = False,
             grid_refinement = 'gradual',
             wg_type = 'step',
@@ -1738,7 +1787,7 @@ if __name__ == "__main__":
             solver_type = "yee",
             frame_skip = 10,
             eps_core = 2.5**2,
-            finesse = 10,
+            finesse = 20,
             free_space_sim = False,
             grid_refinement = 'gradual',
             wg_type = 'step',
