@@ -186,49 +186,93 @@ class FCI_TM_Solver:
         elif self.solver == "Schur":
             print("Pre-factoring the 8x8 system using Schur complement...")
             
-            # Extract blocks
-            M11 = self.LHS[:2*self.len_hx + 2*self.len_hy, :2*self.len_hx + 2*self.len_hy].tocsc()
-            M12 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:].tocsc()
-            M21 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy].tocsc()
-            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:].tocsc()
+            M12 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy]
+            M21 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:]
+            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:]
             
-            #Use DFT to compute inverses of the circulant blocks in M11 efficiently
-            first_row = np.array([1.0, 1.0] + [0.0] * (self.Nx - 2))   # first row of Ax2 = I + S
-            eigenvalues = np.fft.fft(first_row)                     # λ_k = 1 + e^{2πik/n}
-
+            # Compute inverse of M11
             L11_inv = diag(1.0/L11.diagonal())
-            L22_inv = diag(1/byp) @ kron(Ix, Ay_inv)
+            L22_factor = spla.factorized(L22.tocsc())
+            L22_LU = spla.splu(L22.tocsc())
             L33_inv = diag(1.0/L33.diagonal())
-            L44_inv = diag(1/bz) @ kron(Ax_inv, Iy)
+            L44_factor = spla.factorized(L44.tocsc())
+            L44_LU = spla.splu(L44.tocsc())
 
-            # Invert M11
-            M11_inv = sp.bmat([
-                [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
-                [None,      L22_inv,                  None,       None],
-                [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
-                [None,      None,                     None,       L44_inv]
+            def apply_M11_inv(b):
+                b1 = b[:self.len_hx]
+                b2 = b[self.len_hx:2*self.len_hx]
+                b3 = b[2*self.len_hx:2*self.len_hx + self.len_hy]
+                b4 = b[2*self.len_hx + self.len_hy:2*self.len_hx + 2*self.len_hy]
+
+                u1 = L11_inv @ (b1 - L12 @ L22_factor(b2))
+                u2 = L22_factor(b2)
+                u3 = L33_inv @ (b3 - L34 @ L44_factor(b4))
+                u4 = L44_factor(b4)
+
+                return np.concatenate([u1, u2, u3, u4])
+
+
+            # Compute inverse of Schur complement using Schur 
+            S_12 = M22[:2*self.len_ez, 2*self.len_ez:]
+            def apply_S_21(b):
+                b1 = b[:self.len_ez]
+                b2 = b[self.len_ez:]
+
+                u1 = -L71 @ L11_inv @ L12 @ L22_factor(L25 @ b1) - L73 @ L33_inv @ L34 @ L44_factor(L45 @ b1)
+                u2 = np.zeros_like(b2)
+
+                return np.concatenate([u1, u2])
+            
+            def apply_S_21_UL(X):
+                return -L71 @ L11_inv @ L12 @ L22_LU.solve((L25 @ X).toarray()) - L73 @ L33_inv @ L34 @ L44_LU.solve((L45 @ X).toarray())
+            
+            # invert S_11 =  [L55, L56],
+            #                [0,   L66]
+            L55_inv = diag(1.0/L55.diagonal())
+            L66_inv = diag(1.0/L66.diagonal())
+
+            S_11_inv = sp.bmat([
+                [L55_inv, L55_inv @ L56 @ L66_inv],
+                [None, L66_inv]
             ], format='csc')
 
-            # Precompute S = M22 - M21 * M11_inv * M12
-            S = M22 - M21 @ M11_inv @ M12
-            S_fact = spla.factorized(S.tocsc())
+            # Do schur once more
+            L88_inv = diag(1.0/L88.diagonal())
 
-            # Define the solver function
-            def solve_schur(b):
-                # Split b into b1 and b2
+            S2 = L77 - apply_S_21_UL(L55_inv @ L56 @ L66_inv @ L67) - L78 @ L88_inv @ L87
+
+            S2_factor = spla.factorized(S2)
+
+            def apply_S1_inv(b):
+                b1 = b[:self.len_ez]
+                b2 = b[self.len_ez:]
+                
+                u1 = S2_factor(b1 - L78 @ L88_inv @ b2)
+                u2 = -L88_inv @ L87 @ S2_factor(b1 - L78 @ L88_inv @ b2)
+
+                return np.concatenate([u1, u2])
+            
+            def apply_S_inv(b):
+                b1 = b[:2*self.len_ez]
+                b2 = b[2*self.len_ez:]
+                
+                u1 = S_11_inv @ b1 + S_11_inv @ S_12 @ apply_S1_inv(apply_S_21(S_11_inv @ b1)) - S_11_inv @ S_12 @ apply_S1_inv(b2)
+                u2 = apply_S1_inv(b2 - apply_S_21(S_11_inv @ b1))
+            
+                return np.concatenate([u1, u2])
+
+
+            def schur_solve(b):
                 b1 = b[:2*self.len_hx + 2*self.len_hy]
                 b2 = b[2*self.len_hx + 2*self.len_hy:]
 
-                # Solve for u2 = S_inv* (b2 - M21 * M11_inv * b1)
-                u2 = S_fact(b2 - M21 @ M11_inv @ b1)
+                u2 = apply_S_inv(b2 - M21 @ apply_M11_inv(b1))
+                u1 = apply_M11_inv(b1 - M12 @ u2)
+                u = np.concatenate([u1, u2])
 
-                # Solve for u1 = M11_inv * (b1 - M12 * u2)
-                u1 = M11_inv @ (b1 - M12 @ u2)
-
-                # Combine to get full solution
-                return np.concatenate([u1, u2])
-
-            self.solve_func = solve_schur
+                return u
+            
+            self.solve_func = schur_solve
             
 
     def run_simulation(self, src_pos, obs_pos, frame_skip=2):
@@ -466,8 +510,26 @@ class FCI_TM_Solver:
 
 
 sim_params = {
-    'Nx': 51, 
-    'Ny': 51, 
+    'Nx': 101, 
+    'Ny': 101, 
+    'Nt': 100, 
+    'lambda0': 1, 
+    'CFL': 1,
+    'Source_loc' : (25,25),
+    'Obs_loc' : (30,40),
+    'bc': 'PBC',
+    'solver': 'Schur',
+    'finesse': 20,
+    'frame_skip': 1,
+    'hankel_f_min': 0.0,
+    'hankel_f_max': 3 * 299792458
+}
+
+results, time_schur = FCI_TM_Solver.run_full_analysis(sim_params)
+
+sim_params = {
+    'Nx': 101, 
+    'Ny': 101, 
     'Nt': 100, 
     'lambda0': 1, 
     'CFL': 1,
