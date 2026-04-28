@@ -528,25 +528,36 @@ class FCISolver:
             
             # Compute inverse of M11
             L11_inv = diag(1.0/L11.diagonal())
-            L22_inv = spla.spsolve(L22.tocsc(), sp.eye(L22.shape[0], format='csc'), permc_spec='COLAMD')
+            L22_factor = spla.factorized(L22.tocsc())
             L33_inv = diag(1.0/L33.diagonal())
-            L44_inv = spla.spsolve(L44.tocsc(), sp.eye(L44.shape[0], format='csc'), permc_spec='COLAMD')
+            L44_factor = spla.factorized(L44.tocsc())
 
-            M11_inv = sp.bmat([
-                [L11_inv,  -L11_inv @ L12 @ L22_inv,  None,       None],
-                [None,      L22_inv,                  None,       None],
-                [None,      None,                     L33_inv,  -L33_inv @ L34 @ L44_inv],
-                [None,      None,                     None,       L44_inv]
-            ], format='csc')
+            def apply_M11_inv(b):
+                b1 = b[:self.len_hx]
+                b2 = b[self.len_hx:2*self.len_hx]
+                b3 = b[2*self.len_hx:2*self.len_hx + self.len_hy]
+                b4 = b[2*self.len_hx + self.len_hy:2*self.len_hx + 2*self.len_hy]
+
+                u1 = L11_inv @ (b1 - L12 @ L22_factor(b2))
+                u2 = L22_factor(b2)
+                u3 = L33_inv @ (b3 - L34 @ L44_factor(b4))
+                u4 = L44_factor(b4)
+
+                return np.concatenate([u1, u2, u3, u4])
+
 
             # Compute inverse of Schur complement using Schur 
             S_12 = M22[:2*self.len_ez, 2*self.len_ez:]
-            S_21 = sp.bmat([
-                [-L71 @ L11_inv @ L12 @ L22_inv @ L25 - L73 @ L33_inv @ L34 @ L44_inv @ L45, None],
-                [sp.eye(self.len_ez, format='csc') * 0, None]
-            ], format='csc')
-            S_22 = M22[2*self.len_ez:, 2*self.len_ez:]
+            def apply_S_21(b):
+                b1 = b[:self.len_ez]
+                b2 = b[self.len_ez:]
 
+                u1 = -L71 @ L11_inv @ L12 @ L22_factor(L25 @ b1) - L73 @ L33_inv @ L34 @ L44_factor(L45 @ b1)
+                u2 = np.zeros_like(b2)
+
+                return np.concatenate([u1, u2])
+            def apply_S_21_UL(b1):
+                return -L71 @ L11_inv @ L12 @ L22_factor(L25 @ b1) - L73 @ L33_inv @ L34 @ L44_factor(L45 @ b1)
             # invert S_11 =  [L55, L56],
             #                [0,   L66]
             L55_inv = diag(1.0/L55.diagonal())
@@ -562,25 +573,35 @@ class FCISolver:
 
             S2 = L77 - S_12[:self.len_ez, :self.len_ez] @ L55_inv @ L56 @ L66_inv @ L67 - L78 @ L88_inv @ L87
 
-            S2_inv = spla.spsolve(S2.tocsc(), sp.eye(S2.shape[0], format='csc'), permc_spec='COLAMD')
+            def apply_S2_inv(b):
+                return spla.factorized(L77 - apply_S_21_UL(L55_inv @ L56 @ L66_inv @ L67) - L78 @ L88_inv @ L87)
 
-            S1_inv = sp.bmat([
-                [S2_inv, -S2_inv @ L78 @ L88_inv],
-                [-L88_inv @ L87 @ S2_inv, L88_inv + L88_inv @ L87 @ S2_inv @ L78 @ L88_inv]
-            ], format='csc')
+
+            def apply_S1_inv(b):
+                b1 = b[:self.len_ez]
+                b2 = b[self.len_ez:]
+                
+                u1 = apply_S2_inv(b1 - L78 @ L88_inv @ b2)
+                u2 = -L88_inv @ L87 @ apply_S2_inv(b1 - L78 @ L88_inv @ b2)
+
+                return np.concatenate([u1, u2])
             
-            S_inv = sp.bmat([
-                [S_11_inv + S_11_inv @ S_12 @ S1_inv @ S_21 @ S_11_inv, -S_11_inv @ S_12 @ S1_inv],
-                [-S1_inv @ S_21 @ S_11_inv, S1_inv]
-            ], format='csc')
+            def apply_S_inv(b):
+                b1 = b[:2*self.len_ez]
+                b2 = b[2*self.len_ez:]
+                
+                u1 = S_11_inv @ b1 + S_11_inv @ S_12 @ apply_S1_inv(apply_S_21(S_11_inv @ b1)) - S_11_inv @ S_12 @ apply_S1_inv(b2)
+                u2 = apply_S1_inv(b2 - apply_S_21(S_11_inv @ b1))
+            
+                return np.concatenate([u1, u2])
 
 
             def schur_solve(b):
                 b1 = b[:2*self.len_hx + 2*self.len_hy]
                 b2 = b[2*self.len_hx + 2*self.len_hy:]
 
-                u2 = S_inv @ (b2 - M21 @ M11_inv @ b1)
-                u1 = M11_inv @ (b1 - M12 @ u2)
+                u2 = apply_S_inv(b2 - M21 @ apply_M11_inv(b1))
+                u1 = apply_M11_inv(b1 - M12 @ u2)
                 u = np.concatenate([u1, u2])
 
                 return u
@@ -1079,7 +1100,7 @@ class SimulationAnalyzer:
 # ==============================================================================
 if __name__ == "__main__":
     
-    Compare_FCI_YEE = False
+    Compare_FCI_YEE = True
     if Compare_FCI_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
@@ -1100,7 +1121,7 @@ if __name__ == "__main__":
         t0 = time.time()
         res_yee = SimulationRunner.execute(
             solver_type="fci",
-            schur = False,
+            schur = True,
             frame_skip=10,
             finesse=10,
             free_space_sim=True,
@@ -1220,7 +1241,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
-    Plot1D_Animation = True
+    Plot1D_Animation = False
     if Plot1D_Animation == True:
         t0 = time.time()
         res_yee_grad = SimulationRunner.execute(
