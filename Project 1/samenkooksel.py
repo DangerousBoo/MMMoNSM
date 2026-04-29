@@ -50,7 +50,7 @@ class SimulationConfig:
         # Dimensions expressed in amount of wavelengths
         f = 1
         self.L_wg   = f * 6 * self.lam_c
-        self.w_core = f * 1.5 * self.lam_c
+        self.w_core = getattr(self, "w_core",1.5) * f * self.lam_c
         self.w_clad = f * 1 * self.lam_c
         self.w_air  = f * 0.5 * self.lam_c
         self.d      = f * 2 * self.lam_c
@@ -83,9 +83,14 @@ class SimulationConfig:
             
         print(f"Grid: {self.nx} x {self.ny}")
         
-        self.epsilon_r  = np.ones((self.nx, self.ny))
-        self.sigma      = np.zeros((self.nx-2, self.ny-2))
-        self.gamma      = np.zeros((self.nx-2, self.ny-2))
+        if self.solver_type == "fci":
+            self.epsilon_r  = np.ones((self.nx, self.ny))
+            self.sigma      = np.zeros((self.nx, self.ny))
+            self.gamma      = self.gamma_f
+        else:
+            self.epsilon_r  = np.ones((self.nx, self.ny))
+            self.sigma      = np.zeros((self.nx-2, self.ny-2))
+            self.gamma      = np.zeros((self.nx-2, self.ny-2))
 
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
@@ -554,12 +559,6 @@ class FCISolver:
         else:
             self.nx_n = self.cfg.nx + 1
             self.ny_n = self.cfg.ny + 1
-  
-        
-
-        self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
-        self.cfg.gamma = 0.0
-        self.cfg.epsilon_r  = np.ones((self.nx_n, self.ny_n))
 
         self.cfg.v_local = self.cfg.c / np.sqrt(self.cfg.epsilon_r)
         self.cfg.Z_local = self.cfg.Z0 / np.sqrt(self.cfg.epsilon_r)
@@ -1499,7 +1498,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = False
+    FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
@@ -1690,7 +1689,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual)
         SimulationAnalyzer.compare_recorders(res_yee_false, res_yee_step, res_yee_gradual)
 
-    Grin_vs_step_Yee = True
+    Grin_vs_step_Yee = False
     if Grin_vs_step_Yee: 
         t0 = time.time()
         res_step = SimulationRunner.execute(
@@ -1803,3 +1802,66 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_1nm)
         SimulationAnalyzer.plot_2d_animation(res_1pm)
         SimulationAnalyzer.plot_cumulative_energy_flux(res_1m, res_100nm, res_1nm, res_1pm)
+
+    FCI_vs_YEE_stepwg = False
+    if FCI_vs_YEE_stepwg:
+        t0 = time.time()
+        res_fci_schur = SimulationRunner.execute(
+            solver_type = "fci",
+            schur = False,
+            frame_skip = 10,
+            finesse = 10,
+            free_space_sim = False,
+            grid_refinement = "step",
+            wg_type = "step",
+            do_hankel = False,
+            recorders = ["after"],
+            label = "FCI"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+
+        SimulationAnalyzer.plot_2d_animation(res_fci_schur)
+
+        t0 = time.time()
+        res_yee = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            wg_type = "step",
+            recorders=["after"],
+            label = r"Yee"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_yee)
+        
+        SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
+             
+    Drude_test = False
+    if Drude_test:
+        t0 = time.time()
+        res_drude = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            eps_core=1,
+            eps_clad=1,
+            w_core = 0.1,
+            free_space_sim=False,
+            grid_refinement = "gradual",
+            wg_type = "step",
+            do_hankel=True,
+            recorders=["after"],
+            lam_c = 1e-8,
+            label = r"Yee with Drude"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_drude)
+        SimulationAnalyzer.compare_recorders(res_drude)
