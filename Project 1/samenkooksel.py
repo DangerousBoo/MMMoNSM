@@ -3,10 +3,13 @@ import numpy as np
 from tqdm import tqdm
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+from pypardiso import PyPardisoSolver
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, ArtistAnimation
 import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
+
+ps = PyPardisoSolver()
 
 # ==============================================================================
 # 1. Configuration
@@ -683,7 +686,8 @@ class FCISolver:
 
         if not self.cfg.schur:
             print("Pre-factoring system (full LU)...")
-            self.solve_func = spla.factorized(self.LHS.tocsc())
+            self.LHScsc = self.LHS.tocsc()
+            self.solve_func = ps.factorize(self.LHScsc) #spla.factorized(self.LHS.tocsc())
         else:
             print("Pre-factoring system (Schur complement)...")
             # Get blocks
@@ -786,7 +790,8 @@ class FCISolver:
         src_idx = self.idx_ez.start + self.cfg.x0 * self.ny_n + self.cfg.y0
         b[src_idx] -= src_val * dx * dy
 
-        self.u = self.solve_func(b)
+        self.u = ps.solve(self.LHScsc,b)
+
         self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
 
 # ==============================================================================
@@ -1499,7 +1504,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = False
+    FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
@@ -1507,8 +1512,8 @@ if __name__ == "__main__":
             schur = False,
             frame_skip = 10,
             finesse = 10,
-            free_space_sim = True,
-            grid_refinement = False,
+            free_space_sim = False,
+            grid_refinement = 'step',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI (Schur)"
@@ -1690,7 +1695,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual)
         SimulationAnalyzer.compare_recorders(res_yee_false, res_yee_step, res_yee_gradual)
 
-    Grin_vs_step_Yee = True
+    Grin_vs_step_Yee = False
     if Grin_vs_step_Yee: 
         t0 = time.time()
         res_step = SimulationRunner.execute(
