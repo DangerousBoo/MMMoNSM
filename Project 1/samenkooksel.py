@@ -1519,7 +1519,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = True
+    FCI_vs_YEE = False
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci = SimulationRunner.execute(
@@ -1664,22 +1664,8 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
-    Grid_refinement_Yee = False
-    if Grid_refinement_Yee:
-        t0 = time.time()
-        res_yee_false = SimulationRunner.execute(
-            solver_type="yee",
-            frame_skip=10,
-            finesse=30,
-            free_space_sim=True,
-            do_hankel=True,
-            grid_refinement = False,
-            recorders=["after"],
-            label = r"None"
-        )
-        t1 = time.time()
-        print(f"YEE executed in {t1-t0:.2f} seconds.")
-        
+    Grid_refinement_Yee = True
+    if Grid_refinement_Yee:    
         t0 = time.time()
         res_yee_step = SimulationRunner.execute(
             solver_type="yee",
@@ -1695,23 +1681,71 @@ if __name__ == "__main__":
         print(f"YEE executed in {t1-t0:.2f} seconds.")
         
         t0 = time.time()
-        res_yee_gradual = SimulationRunner.execute(
+        res_yee_gradual_2 = SimulationRunner.execute(
             solver_type="yee",
             frame_skip=10,
             finesse=30,
             free_space_sim=True,
+            alpha = 2,
             do_hankel=True,
             grid_refinement = "gradual",
             recorders=["after"],
-            label = r"Gradual"
+            label = r"$\alpha =2$"
         )
         t1 = time.time()
         print(f"YEE executed in {t1-t0:.2f} seconds.")
         
-        SimulationAnalyzer.plot_2d_animation(res_yee_false)
+        t0 = time.time()
+        res_yee_gradual_1p5 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            alpha = 1.5,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            recorders=["after"],
+            label = r"$\alpha = 1.5$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        t0 = time.time()
+        res_yee_gradual_1p2 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            alpha = 1.2,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            recorders=["after"],
+            label = r"$\alpha = 1.2$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
+        t0 = time.time()
+        res_yee_gradual_1p05 = SimulationRunner.execute(
+            solver_type="yee",
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            alpha = 1.05,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            recorders=["after"],
+            label = r"$\alpha = 1.05$"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+    
         SimulationAnalyzer.plot_2d_animation(res_yee_step)
-        SimulationAnalyzer.plot_2d_animation(res_yee_gradual)
-        SimulationAnalyzer.compare_recorders(res_yee_false, res_yee_step, res_yee_gradual)
+        SimulationAnalyzer.plot_2d_animation(res_yee_gradual_2)
+        SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p5)
+        SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p2)
+        SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
+        SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
 
     Grin_vs_step_Yee = False
     if Grin_vs_step_Yee: 
