@@ -31,6 +31,7 @@ class SimulationConfig:
         self.eps_clad   = 2.218**2
         self.eps_core   = 2.22**2
         self.gamma_f    = 2.0
+        self.sigma_wall = getattr(self, "sigma_wall", 3.5e7) # Conductivity of the metallic walls, set to 0 for PEC
 
         # Apply user overrides before deriving wavelength-dependent values.
         for key, value in kwargs.items():
@@ -48,7 +49,7 @@ class SimulationConfig:
         self.f_break = 2 * self.f_c
         
         # Dimensions expressed in amount of wavelengths
-        f = 1
+        f = getattr(self, "f", 1.0)
         self.L_wg   = f * 6 * self.lam_c
         self.w_core = getattr(self, "w_core",1.5) * f * self.lam_c
         self.w_clad = f * 1 * self.lam_c
@@ -77,6 +78,10 @@ class SimulationConfig:
         if self.fci_bc == "PBC" and self.solver_type == "fci":
             self.nx = len(self.dx)
             self.ny = len(self.dy)
+        elif self.solver_type == "fci":
+            self.nx = len(self.dx)
+            self.ny = len(self.dy) + 1
+            self.dx = self.dx[:-1] # make sure that we dont have an even matrix
         else:
             self.nx = len(self.dx) + 1
             self.ny = len(self.dy) + 1
@@ -217,6 +222,9 @@ class SimulationConfig:
             left_dx = np.full(self.n_pml, self.dx[0])
             right_dx = np.full(self.n_pml, self.dx[-1])
             self.dx = np.concatenate([left_dx, self.dx, right_dx])
+            
+        if len(self.dx)%2 == 0:
+            self.dx = np.concatenate([self.dx, [self.dx[-1]]])
 
     def _build_dy(self):
         self.deps_max = getattr(self, "deps_max", 0.1) # percentage of (self.eps_core - self.eps_clad)
@@ -437,12 +445,12 @@ class SimulationConfig:
             else:
                 self.epsilon_r[core_slice] = self.eps_core
             
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(self.n_air + self.n_clad + y_shift)] = 3.5e7
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(self.n_air + self.n_clad + y_shift):] = 3.5e7
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
         if self.double_wall:
             second_wall_x = int(self.n_Ll + self.n_d + self.n_wg + x_shift)
-            self.sigma[second_wall_x,   :int(self.n_air + self.n_clad + y_shift)] = 3.5e7
-            self.sigma[second_wall_x, - int(self.n_air + self.n_clad + y_shift):] = 3.5e7
+            self.sigma[second_wall_x,   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+            self.sigma[second_wall_x, - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
 
 # ==============================================================================
 # 2. Solvers
@@ -1501,7 +1509,8 @@ if __name__ == "__main__":
     FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
-        res_fci_schur = SimulationRunner.execute(
+        res_fci = SimulationRunner.execute(
+            f = 0.5,
             solver_type = "fci",
             schur = False,
             frame_skip = 10,
@@ -1510,15 +1519,16 @@ if __name__ == "__main__":
             grid_refinement = False,
             do_hankel = True,
             recorders = ["after"],
-            label = "FCI (Schur)"
+            label = "FCI"
         )
         t1 = time.time()
         print(f"FCI executed in {t1-t0:.2f} seconds.")
 
-        SimulationAnalyzer.plot_2d_animation(res_fci_schur)
+        SimulationAnalyzer.plot_2d_animation(res_fci)
 
         t0 = time.time()
         res_yee = SimulationRunner.execute(
+            f = 0.5,
             solver_type="yee",
             frame_skip=10,
             finesse=10,
@@ -1533,7 +1543,7 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.plot_2d_animation(res_yee)
         
-        SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
+        SimulationAnalyzer.compare_recorders(res_fci, res_yee)
     
     Finesse_YEE = False
     if Finesse_YEE:
@@ -1827,8 +1837,9 @@ if __name__ == "__main__":
         res_yee = SimulationRunner.execute(
             solver_type="yee",
             frame_skip=10,
-            finesse=10,
-            free_space_sim=True,
+            finesse=30,
+            sigma_wall = 0,
+            free_space_sim=False,
             do_hankel=True,
             grid_refinement = "gradual",
             wg_type = "step",
