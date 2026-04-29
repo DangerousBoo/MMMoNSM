@@ -1486,9 +1486,9 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_eps_r_colormap(res)
         SimulationAnalyzer.plot_2d_animation(res)
     
-    PML_test = False
-    if PML_test:
-        n_list = [30, 35, 40, 45, 50]
+    PML_test_Yee = True
+    if PML_test_Yee:
+        n_list = [10, 20, 30, 40]
         m_list = [3, 4, 5]
         results_by_m = {m: [] for m in m_list}
 
