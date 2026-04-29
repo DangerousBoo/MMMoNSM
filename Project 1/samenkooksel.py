@@ -10,6 +10,9 @@ import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
 
 ps = PyPardisoSolver()
+ps.set_iparm(10, 13)   # pivot perturbation eps = 1e-13 (default is 1e-8)
+ps.set_iparm(13, 1)    # improved accuracy for indefinite/saddle-point matrices
+ps.set_iparm(8, 10)   # up to 10 iterative refinement steps after solve
 
 # ==============================================================================
 # 1. Configuration
@@ -685,8 +688,11 @@ class FCISolver:
 
         if not self.cfg.schur:
             print("Pre-factoring system (full LU)...")
-            self.LHScsc = self.LHS.tocsc()
-            self.solve_func = ps.factorize(self.LHScsc) #spla.factorized(self.LHS.tocsc())
+            self.lhs = self.LHS.tocsc()
+            if self.cfg.multi:
+                ps.factorize(self.lhs)
+            else:
+                self.solve_func = spla.factorized(self.LHS.tocsc())
         else:
             print("Pre-factoring system (Schur complement)...")
             # Get blocks
@@ -788,8 +794,10 @@ class FCISolver:
         dy = self.cfg.dy[self.cfg.y0]
         src_idx = self.idx_ez.start + self.cfg.x0 * self.ny_n + self.cfg.y0
         b[src_idx] -= src_val * dx * dy
-
-        self.u = ps.solve(self.LHScsc,b)
+        if self.cfg.multi:
+            self.u = ps.solve(self.lhs,b)
+        else:
+            self.u = self.solve_func(b)
 
         self.Ez = self.u[self.idx_ez].reshape((self.nx_n, self.ny_n))
 
@@ -1509,10 +1517,11 @@ if __name__ == "__main__":
         res_fci_schur = SimulationRunner.execute(
             solver_type = "fci",
             schur = False,
+            multi = True,
             frame_skip = 10,
             finesse = 10,
-            free_space_sim = False,
-            grid_refinement = 'step',
+            free_space_sim = True,
+            grid_refinement = 'gradual',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI (Schur)"
@@ -1529,7 +1538,7 @@ if __name__ == "__main__":
             finesse=10,
             free_space_sim=True,
             do_hankel=True,
-            grid_refinement = False,
+            grid_refinement = 'gradual',
             recorders=["after"],
             label = r"Yee"
         )
