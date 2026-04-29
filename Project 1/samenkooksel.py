@@ -49,7 +49,7 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = 1
-        self.L_wg   = f * 6 * self.lam_c
+        self.L_wg   = f * 4 * self.lam_c
         self.w_core = f * 1.5 * self.lam_c
         self.w_clad = f * 1 * self.lam_c
         self.w_air  = f * 0.5 * self.lam_c
@@ -84,7 +84,7 @@ class SimulationConfig:
         print(f"Grid: {self.nx} x {self.ny}")
         
         self.epsilon_r  = np.ones((self.nx, self.ny))
-        self.sigma      = np.zeros((self.nx-2, self.ny-2))
+        self.sigma      = np.zeros((self.nx, self.ny))
         self.gamma      = np.zeros((self.nx-2, self.ny-2))
 
         self.dx_f = self.dx.min()
@@ -453,8 +453,8 @@ class YeeSolver:
 
         sub_v = cfg.v_local[1:-1, 1:-1]
         sub_z = cfg.Z_local[1:-1, 1:-1]
-        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma / (2.0 * self.ap))
-        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma / (2.0 * self.ap))
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
         self.inv_dx, self.inv_dy = 1.0 / cfg.dx, 1.0 / cfg.dy
@@ -482,7 +482,8 @@ class YeeSolver:
         self.Ez_ddot[ix, iy] = (self.coef_n * self.Ez_ddot[ix, iy] - self.coef_j * self.Jc[ix, iy] + curl_h) / self.coef_p
         
         avg_Ez_ddot = self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy]
-        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
+        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma[ix, iy] * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
+
         
         self.Ez_dot_old[:] = self.Ez_dot
         diff_Ez_ddot = self.Ez_ddot[ix, iy] - self.Ez_ddot_old[ix, iy]
@@ -510,9 +511,9 @@ class FCISolver:
   
         
 
-        self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
+        # self.cfg.sigma = np.zeros((self.nx_n, self.ny_n)) #Define Drude media (so sigma_DC)
         self.cfg.gamma = 0.0
-        self.cfg.epsilon_r  = np.ones((self.nx_n, self.ny_n))
+        # self.cfg.epsilon_r  = np.ones((self.nx_n, self.ny_n))
 
         self.cfg.v_local = self.cfg.c / np.sqrt(self.cfg.epsilon_r)
         self.cfg.Z_local = self.cfg.Z0 / np.sqrt(self.cfg.epsilon_r)
@@ -639,92 +640,121 @@ class FCISolver:
             self.solve_func = spla.factorized(self.LHS.tocsc())
         else:
             print("Pre-factoring system (Schur complement)...")
-            # Get blocks
-            
-            M12 = self.LHS[2*self.len_hx + 2*self.len_hy:, :2*self.len_hx + 2*self.len_hy]
-            M21 = self.LHS[:2*self.len_hx + 2*self.len_hy, 2*self.len_hx + 2*self.len_hy:]
-            M22 = self.LHS[2*self.len_hx + 2*self.len_hy:, 2*self.len_hx + 2*self.len_hy:]
-            
-            # Compute inverse of M11
-            L11_inv = diag(1.0/L11.diagonal())
-            L22_factor = spla.factorized(L22.tocsc())
-            L33_inv = diag(1.0/L33.diagonal())
-            L44_factor = spla.factorized(L44.tocsc())
+
+            nx_n, ny_n = self.nx_n, self.ny_n
+            N        = self.len_ez                       # ez-block size = nx_n * ny_n
+            len_hx   = self.len_hx
+            len_hy   = self.len_hy
+            top_len  = 2*len_hx + 2*len_hy
+
+            # Diagonal block inverses (L11, L33, L55, L66, L88 are all sp.diags)
+            L11_inv = diag(1.0 / L11.diagonal())
+            L33_inv = diag(1.0 / L33.diagonal())
+            L55_inv = diag(1.0 / L55.diagonal())
+            L66_inv = diag(1.0 / L66.diagonal())
+            L88_inv = diag(1.0 / L88.diagonal())
+
+            # L22 = kron(Ix, Ay) @ diag(byp). In row-major ordering this is
+            # block-diagonal with nx_n blocks of size ny_n. The PBC corner of Ay
+            # lives *inside* each block, not between them, so block-diagonality
+            # is preserved. Each block is dense ny_n x ny_n: trivial to invert.
+            Ay_dense = Ay.toarray()
+            byp_2d   = byp.reshape(nx_n, ny_n)
+            inv_blocks_22 = [np.linalg.inv(Ay_dense * byp_2d[i, :][np.newaxis, :])
+                             for i in range(nx_n)]
+            L22_inv = sp.block_diag(inv_blocks_22, format='csc')
+
+            # L44 = kron(Ax, Iy) @ diag(bz). The PBC corner in Ax escapes each
+            # row-major block, so we permute to column-major where the kron
+            # identity P @ kron(Ax, Iy) @ P.T = kron(Iy, Ax) restores block-
+            # diagonality. We get ny_n blocks of size nx_n.
+            Ax_dense = Ax.toarray()
+            bz_2d    = bz.reshape(nx_n, ny_n)
+            inv_blocks_44 = [np.linalg.inv(Ax_dense * bz_2d[:, j][np.newaxis, :])
+                             for j in range(ny_n)]
+            L44_inv_perm = sp.block_diag(inv_blocks_44, format='csc')
+
+            perm_idx = np.arange(N).reshape(nx_n, ny_n).T.ravel()
+            P = sp.csc_matrix((np.ones(N), (np.arange(N), perm_idx)), shape=(N, N))
+            L44_inv = (P.T @ L44_inv_perm @ P).tocsc()
+
+            if getattr(self.cfg, 'verify_schur', False):
+                rng = np.random.default_rng(0)
+                x = rng.standard_normal(N)
+                err22 = np.linalg.norm(L22 @ (L22_inv @ x) - x)
+                err44 = np.linalg.norm(L44 @ (L44_inv @ x) - x)
+                print(f"  L22_inv residual: {err22:.2e}, L44_inv residual: {err44:.2e}")
+
+            # Outer Schur eliminates the (hx, hx_dot, hy, hy_dot) block. The
+            # only nonzero of (M_BL @ M11_inv @ M_TR) lives at the (ez_ddot, ez)
+            # position and equals -K, so the outer-Schur correction adds K to
+            # that block:
+            K = (L71 @ L11_inv @ L12 @ L22_inv @ L25
+               + L73 @ L33_inv @ L34 @ L44_inv @ L45).tocsc()
+
+            # Two further Schur eliminations on the ez/ez_dot/jz blocks
+            # collapse to a single N x N system:
+            #   S2 = L77 + K @ L55_inv @ L56 @ L66_inv @ L67 - L78 @ L88_inv @ L87
+            S2 = (L77
+                + K @ L55_inv @ L56 @ L66_inv @ L67
+                - L78 @ L88_inv @ L87).tocsc()
+            print(f"  Factoring S2: {S2.shape[0]} x {S2.shape[1]}, nnz={S2.nnz}")
+            S2_factor = spla.factorized(S2)
 
             def apply_M11_inv(b):
-                b1 = b[:self.len_hx]
-                b2 = b[self.len_hx:2*self.len_hx]
-                b3 = b[2*self.len_hx:2*self.len_hx + self.len_hy]
-                b4 = b[2*self.len_hx + self.len_hy:2*self.len_hx + 2*self.len_hy]
-
-                u1 = L11_inv @ (b1 - L12 @ L22_factor(b2))
-                u2 = L22_factor(b2)
-                u3 = L33_inv @ (b3 - L34 @ L44_factor(b4))
-                u4 = L44_factor(b4)
-
+                b1 = b[:len_hx]
+                b2 = b[len_hx:2*len_hx]
+                b3 = b[2*len_hx:2*len_hx + len_hy]
+                b4 = b[2*len_hx + len_hy:2*len_hx + 2*len_hy]
+                u2 = L22_inv @ b2
+                u1 = L11_inv @ (b1 - L12 @ u2)
+                u4 = L44_inv @ b4
+                u3 = L33_inv @ (b3 - L34 @ u4)
                 return np.concatenate([u1, u2, u3, u4])
 
+            # S_TL = [[L55, L56], [0, L66]] (upper triangular block)
+            def apply_S_TL_inv(b):
+                b_ez    = b[:N]
+                b_ezdot = b[N:]
+                u_ezdot = L66_inv @ b_ezdot
+                u_ez    = L55_inv @ (b_ez - L56 @ u_ezdot)
+                return np.concatenate([u_ez, u_ezdot])
 
-            # Compute inverse of Schur complement using Schur 
-            S_12 = M22[:2*self.len_ez, 2*self.len_ez:]
-            def apply_S_21(b):
-                b1 = b[:self.len_ez]
-                b2 = b[self.len_ez:]
+            # S_inner = [[L77+correction, L78], [L87, L88]]; eliminate L88 row
+            def apply_S_inner_inv(b):
+                b1 = b[:N]
+                b2 = b[N:]
+                v1 = S2_factor(b1 - L78 @ (L88_inv @ b2))
+                v2 = L88_inv @ (b2 - L87 @ v1)
+                return np.concatenate([v1, v2])
 
-                u1 = -L71 @ L11_inv @ L12 @ L22_factor(L25 @ b1) - L73 @ L33_inv @ L34 @ L44_factor(L45 @ b1)
-                u2 = np.zeros_like(b2)
-
-                return np.concatenate([u1, u2])
-            def apply_S_21_UL(b1):
-                return -L71 @ L11_inv @ L12 @ L22_factor(L25 @ b1) - L73 @ L33_inv @ L34 @ L44_factor(L45 @ b1)
-            # invert S_11 =  [L55, L56],
-            #                [0,   L66]
-            L55_inv = diag(1.0/L55.diagonal())
-            L66_inv = diag(1.0/L66.diagonal())
-
-            S_11_inv = sp.bmat([
-                [L55_inv, L55_inv @ L56 @ L66_inv],
-                [None, L66_inv]
-            ], format='csc')
-
-            # Do schur once more
-            L88_inv = diag(1.0/L88.diagonal())
-
-            S2 = L77 - S_12[:self.len_ez, :self.len_ez] @ L55_inv @ L56 @ L66_inv @ L67 - L78 @ L88_inv @ L87
-
-            def apply_S2_inv(b):
-                return spla.factorized(L77 - apply_S_21_UL(L55_inv @ L56 @ L66_inv @ L67) - L78 @ L88_inv @ L87)
-
-
-            def apply_S1_inv(b):
-                b1 = b[:self.len_ez]
-                b2 = b[self.len_ez:]
-                
-                u1 = apply_S2_inv(b1 - L78 @ L88_inv @ b2)
-                u2 = -L88_inv @ L87 @ apply_S2_inv(b1 - L78 @ L88_inv @ b2)
-
-                return np.concatenate([u1, u2])
-            
+            # S_BL is zero everywhere except the (ez_ddot, ez) block (= K),
+            # S_TR is zero everywhere except the (ez_dot, ez_ddot) block (= L67).
+            # Inline their actions to skip the trivial zero rows.
             def apply_S_inv(b):
-                b1 = b[:2*self.len_ez]
-                b2 = b[2*self.len_ez:]
-                
-                u1 = S_11_inv @ b1 + S_11_inv @ S_12 @ apply_S1_inv(apply_S_21(S_11_inv @ b1)) - S_11_inv @ S_12 @ apply_S1_inv(b2)
-                u2 = apply_S1_inv(b2 - apply_S_21(S_11_inv @ b1))
-            
-                return np.concatenate([u1, u2])
+                b_top = b[:2*N]      # ez, ez_dot
+                b_bot = b[2*N:]      # ez_ddot, jz
+                x_top_tmp = apply_S_TL_inv(b_top)
+                rhs_bot = np.empty(2*N)
+                rhs_bot[:N] = b_bot[:N] - K @ x_top_tmp[:N]
+                rhs_bot[N:] = b_bot[N:]
+                u_bot = apply_S_inner_inv(rhs_bot)
+                rhs_top = np.empty(2*N)
+                rhs_top[:N] = b_top[:N]
+                rhs_top[N:] = b_top[N:] - L67 @ u_bot[:N]
+                u_top = apply_S_TL_inv(rhs_top)
+                return np.concatenate([u_top, u_bot])
 
+            M_TR = self.LHS[:top_len, top_len:].tocsc()
+            M_BL = self.LHS[top_len:, :top_len].tocsc()
 
             def schur_solve(b):
-                b1 = b[:2*self.len_hx + 2*self.len_hy]
-                b2 = b[2*self.len_hx + 2*self.len_hy:]
+                b_top = b[:top_len]
+                b_bot = b[top_len:]
+                u_bot = apply_S_inv(b_bot - M_BL @ apply_M11_inv(b_top))
+                u_top = apply_M11_inv(b_top - M_TR @ u_bot)
+                return np.concatenate([u_top, u_bot])
 
-                u2 = apply_S_inv(b2 - M21 @ apply_M11_inv(b1))
-                u1 = apply_M11_inv(b1 - M12 @ u2)
-                u = np.concatenate([u1, u2])
-
-                return u
-            
             self.solve_func = schur_solve
         
 
@@ -1447,7 +1477,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = False
+    FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci_schur = SimulationRunner.execute(
@@ -1455,8 +1485,9 @@ if __name__ == "__main__":
             schur = False,
             frame_skip = 10,
             finesse = 10,
-            free_space_sim = True,
-            grid_refinement = False,
+            free_space_sim = False,
+            verify_schur = True,
+            grid_refinement = 'step',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI (Schur)"
@@ -1638,7 +1669,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual)
         SimulationAnalyzer.compare_recorders(res_yee_false, res_yee_step, res_yee_gradual)
 
-    Grin_vs_step_Yee = True
+    Grin_vs_step_Yee = False
     if Grin_vs_step_Yee:
         t0 = time.time()
         res_step = SimulationRunner.execute(
