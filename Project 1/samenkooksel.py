@@ -1344,6 +1344,9 @@ class SimulationAnalyzer:
 # ==============================================================================
 if __name__ == "__main__":
     
+    # Runs a single Yee simulation in free-space (no waveguide core) and plots
+    # the grid spacing, the permittivity colormap, and the 2D field animation.
+    # Useful as a quick sanity check that the solver and domain are set up correctly.
     Single_test = False
     if Single_test:
         t0 = time.time()
@@ -1366,6 +1369,8 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res)
     
     
+    # Sweeps PML thickness (n_pml = 10, 20, 30, 40) and polynomial order (m = 3, 4, 5)
+    # in free-space to find the combination that minimises boundary reflections.
     PML_test_Yee = False
     if PML_test_Yee:
         n_list = [10, 20, 30, 40]
@@ -1399,6 +1404,9 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
+    # Runs the same free-space simulation with both the Yee (FDTD) and FCI (collocated)
+    # solvers side-by-side and overlays their recorder time signals for direct comparison.
+    # The Hankel reference is enabled to verify numerical dispersion against the analytical solution.
     FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
@@ -1442,6 +1450,8 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.compare_recorders(res_fci, res_yee)
     
+    # Tests Yee solver convergence by running the same free-space problem at three
+    # spatial resolutions (finesse = λ/10, λ/20, λ/30) and comparing the recorder outputs.
     Finesse_YEE = False
     if Finesse_YEE:
         t0 = time.time()
@@ -1493,6 +1503,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_30)      
         SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
 
+    # Same convergence test as Finesse_YEE but for the FCI solver (finesse = λ/10, λ/20, λ/30).
     Finesse_FCI = False
     if Finesse_FCI:
         t0 = time.time()
@@ -1550,6 +1561,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20)
 
+    # Runs a single FCI free-space simulation at low resolution (λ/10) to deliberately expose phase velocity errors.
     Phase_error_FCI = False
     if Phase_error_FCI:
         t0 = time.time()
@@ -1571,6 +1583,8 @@ if __name__ == "__main__":
 
         SimulationAnalyzer.compare_recorders(res_fci_10)
 
+    # Compares uniform (step) vs. geometrically graded (gradual) grid stretching for the Yee solver
+    # by sweeping the grading ratio α ∈ {2, 1.5, 1.2, 1.05}. 
     Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
         t0 = time.time()
@@ -1654,6 +1668,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
 
+    # Compares a step-index waveguide against a GRIN (graded-index) waveguide using a free-space run as the flux reference. 
     Grin_vs_step_Yee = False
     if Grin_vs_step_Yee:
         t0 = time.time()
@@ -1712,6 +1727,8 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin, ref=res_reference)
         SimulationAnalyzer.compare_recorders(res_step, res_grin)
 
+    # Sweeps the carrier wavelength over four decades (λ = 1 m, 100 nm, 1 nm, 1 pm) in a
+    # this confirms that the Drude media works at low frequencies
     Wavelength_Sweep_Yee = False
     if Wavelength_Sweep_Yee:
         t0 = time.time()
@@ -1789,6 +1806,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_1pm)
         SimulationAnalyzer.plot_cumulative_energy_flux(res_1m, res_100nm, res_1nm, res_1pm)
 
+    # Repeats the FCI vs Yee head to head but with a step-index waveguide
     FCI_vs_YEE_stepwg = False
     if FCI_vs_YEE_stepwg:
         t0 = time.time()
@@ -1829,6 +1847,7 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.compare_recorders(res_fci_schur, res_yee)
              
+    # Tests the Drude dispersive-medium extension of the Yee solver at λ = 10 nm
     Drude_test = False
     if Drude_test:
         t0 = time.time()
