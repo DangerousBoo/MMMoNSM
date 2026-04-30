@@ -1668,6 +1668,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
 
+    # Compares the effect of using a step grid refineement vs. a gradual grid refinement for the FCI solver.
     Grid_refinement_FCI = False
     if Grid_refinement_FCI:    
         t0 = time.time()
