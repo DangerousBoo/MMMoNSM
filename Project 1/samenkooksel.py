@@ -10,9 +10,9 @@ import scipy.special as sp_special
 from scipy.fft import fft, fftfreq
 
 ps = PyPardisoSolver()
-ps.set_iparm(10, 13)   # pivot perturbation eps = 1e-13 (default is 1e-8)
-ps.set_iparm(13, 1)    # improved accuracy for indefinite/saddle-point matrices
-ps.set_iparm(8, 10)   # up to 10 iterative refinement steps after solve
+ps.set_iparm(9, 13)   # pivot perturbation eps = 1e-13 (default is 1e-8)
+ps.set_iparm(12, 1)    # improved accuracy for indefinite/saddle-point matrices
+ps.set_iparm(7, 10)   # up to 10 iterative refinement steps after solve
 
 # ==============================================================================
 # 1. Configuration
@@ -1531,6 +1531,7 @@ if __name__ == "__main__":
             finesse = 10,
             free_space_sim = True,
             grid_refinement = 'gradual',
+            alpha = 1.5,
             do_hankel = True,
             recorders = ["after"],
             label = "FCI"
@@ -1549,6 +1550,7 @@ if __name__ == "__main__":
             free_space_sim=True,
             do_hankel=True,
             grid_refinement = 'gradual',
+            alpha = 1.5,
             recorders=["after"],
             label = r"Yee"
         )
@@ -1610,12 +1612,13 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_30)      
         SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
 
-    Finesse_FCI = False
+    Finesse_FCI = True
     if Finesse_FCI:
         t0 = time.time()
         res_fci_10 = SimulationRunner.execute(
             solver_type="fci",
             schur = False,
+            multi = False,
             frame_skip=10,
             finesse=10,
             free_space_sim=True,
@@ -1632,7 +1635,8 @@ if __name__ == "__main__":
         t0 = time.time()
         res_fci_20 = SimulationRunner.execute(
             solver_type="fci",
-            schure = False,
+            schur = False,
+            multi = False,
             frame_skip=10,
             finesse=20,
             free_space_sim=True,
@@ -1646,25 +1650,26 @@ if __name__ == "__main__":
         
         SimulationAnalyzer.plot_2d_animation(res_fci_20)
         
-        t0 = time.time()
-        res_fci_30 = SimulationRunner.execute(
-            solver_type="fci",
-            schur = False,
-            frame_skip=10,
-            finesse=30,
-            free_space_sim=True,
-            do_hankel=True,
-            grid_refinement = False,
-            recorders=["after"],
-            label = r"FCI $\lambda/30$"
-        )
-        t1 = time.time()
-        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        # t0 = time.time()
+        # res_fci_30 = SimulationRunner.execute(
+        #     solver_type="fci",
+        #     schur = False,
+        #     multi = False,
+        #     frame_skip=10,
+        #     finesse=30,
+        #     free_space_sim=True,
+        #     do_hankel=True,
+        #     grid_refinement = False,
+        #     recorders=["after"],
+        #     label = r"FCI $\lambda/30$"
+        # )
+        # t1 = time.time()
+        # print(f"FCI executed in {t1-t0:.2f} seconds.")
         
-        SimulationAnalyzer.plot_2d_animation(res_fci_30)      
-        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
+        # SimulationAnalyzer.plot_2d_animation(res_fci_30)      
+        SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20)
 
-    Grid_refinement_Yee = True
+    Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
         t0 = time.time()
         res_yee_step = SimulationRunner.execute(
