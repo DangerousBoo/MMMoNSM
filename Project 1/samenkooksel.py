@@ -29,9 +29,9 @@ class SimulationConfig:
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
         
         # Material Properties
-        self.eps_clad   = 2.218**2
-        self.eps_core   = 2.22**2
-        self.gamma_f    = 2.0
+        self.eps_clad   = 3.9
+        self.eps_core   = 11.9
+        self.gamma_f    = 8e-15
         self.sigma_wall = getattr(self, "sigma_wall", 3.5e7) # Conductivity of the metallic walls, set to 0 for PEC
 
         # Apply user overrides before deriving wavelength-dependent values.
@@ -41,7 +41,7 @@ class SimulationConfig:
         self.double_wall = getattr(self, "double_wall", True)
 
         # Source Parameters
-        self.lam_c  = getattr(self, "lam_c", 1.0)
+        self.lam_c  = getattr(self, "lam_c", 1) # Central wavelength
         self.f_c    = self.c / self.lam_c
         self.A      = 1.0
         self.a      = 3 # Amount of sigmas between fc and 0 in frequency domain
@@ -51,7 +51,7 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = getattr(self, "f", 1.0)
-        self.L_wg   = f * 6 * self.lam_c
+        self.L_wg   = getattr(self, "L_wg", 6) * f * self.lam_c
         self.w_core = getattr(self, "w_core",1.5) * f * self.lam_c
         self.w_clad = f * 1 * self.lam_c
         self.w_air  = f * 0.5 * self.lam_c
@@ -62,7 +62,7 @@ class SimulationConfig:
         self.wall_count = 2 if self.double_wall else 1
         self.L      = self.Ll + self.d + self.wall_count * self.t_m + self.L_wg + self.Lr
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core
-        self.T      = self.t0 + 4*self.sig_t + (self.d + self.wall_count * self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
+        self.T      = self.t0 + 3*self.sig_t + (self.d + self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg) / self.c
         self.finesse = kwargs.get("finesse", 30)
 
             
@@ -86,7 +86,8 @@ class SimulationConfig:
         else:
             self.nx = len(self.dx) + 1
             self.ny = len(self.dy) + 1
-            
+        
+        
         print(f"Grid: {self.nx} x {self.ny}")
         
         if self.solver_type == "fci":
@@ -95,8 +96,8 @@ class SimulationConfig:
             self.gamma      = self.gamma_f
         else:
             self.epsilon_r  = np.ones((self.nx, self.ny))
-            self.sigma      = np.zeros((self.nx-2, self.ny-2))
-            self.gamma      = np.zeros((self.nx-2, self.ny-2))
+            self.sigma      = np.zeros((self.nx, self.ny))
+            self.gamma      = np.zeros((self.nx, self.ny))
 
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
@@ -446,12 +447,12 @@ class SimulationConfig:
             else:
                 self.epsilon_r[core_slice] = self.eps_core
             
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(0.4*self.n_core + self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(0.4*self.n_core + self.n_air + self.n_clad + y_shift):] = self.sigma_wall
         if self.double_wall:
             second_wall_x = int(self.n_Ll + self.n_d + self.n_wg + x_shift)
-            self.sigma[second_wall_x,   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
-            self.sigma[second_wall_x, - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
+            self.sigma[second_wall_x,   :int(0.4*self.n_core + self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+            self.sigma[second_wall_x, - int(0.4*self.n_core + self.n_air + self.n_clad + y_shift):] = self.sigma_wall
 
 # ==============================================================================
 # 2. Solvers
@@ -509,13 +510,16 @@ class YeeSolver:
 
         self.bz_h = 1.0 / (cfg.c * cfg.dt)
         self.bz_e = 1.0 / (cfg.v_local * cfg.dt)
-        self.ap = 2.0 * cfg.gamma / cfg.dt + 1.0
-        self.am = 2.0 * cfg.gamma / cfg.dt - 1.0
 
         sub_v = cfg.v_local[1:-1, 1:-1]
         sub_z = cfg.Z_local[1:-1, 1:-1]
-        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma / (2.0 * self.ap))
-        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma / (2.0 * self.ap))
+        sub_gamma = cfg.gamma[1:-1, 1:-1]
+        sub_sigma = cfg.sigma[1:-1, 1:-1]
+
+        self.ap = 2.0 * sub_gamma / cfg.dt + 1.0
+        self.am = 2.0 * sub_gamma / cfg.dt - 1.0
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * sub_sigma / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * sub_sigma / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
         self.inv_dx, self.inv_dy = 1.0 / cfg.dx, 1.0 / cfg.dy
@@ -543,7 +547,7 @@ class YeeSolver:
         self.Ez_ddot[ix, iy] = (self.coef_n * self.Ez_ddot[ix, iy] - self.coef_j * self.Jc[ix, iy] + curl_h) / self.coef_p
         
         avg_Ez_ddot = self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy]
-        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
+        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma[ix, iy] * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
 
         
         self.Ez_dot_old[:] = self.Ez_dot
@@ -694,7 +698,7 @@ class FCISolver:
             print("Pre-factoring system (full LU)...")
             self.lhs = self.LHS.tocsc()
             if self.cfg.multi:
-                ps.factorize(self.lhs)
+                sp.factorize(self.lhs)
             else:
                 self.solve_func = spla.factorized(self.LHS.tocsc())
         else:
@@ -992,55 +996,6 @@ class SimulationAnalyzer:
             ax.axvspan(f_break, right_edge, color='red', alpha=alpha, lw=0)
 
     @staticmethod
-    def verify_with_hankel(results):
-        print("\n--- Plotting Hankel verification ---")
-        hd = SimulationAnalyzer._compute_hankel_data(results)
-        cfg = results["config"]
-        f_valid = hd["f_valid"]
-
-        label = getattr(cfg, "label", cfg.solver_type.upper())
-        
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
-        
-        ax = axes[0]
-        ax.plot(f_valid, np.abs(hd["J_src_valid"]) / np.abs(hd["J_src_valid"][idx_fc]), label='Source', lw=2, color='lightgray')
-        
-        if "Recorder Full" in hd["obs_points"]:
-            data_main = hd["obs_points"]["Recorder Full"]
-            H_sim_c = data_main["H_sim"]
-            H_anal = data_main["H_analytical"]
-            norm_sim = np.abs(H_sim_c[idx_fc])
-            norm_anal = np.abs(H_anal[idx_fc])
-            
-            ax.plot(f_valid, np.abs(H_sim_c) / norm_sim, label='Simulation', lw=2)
-            ax.plot(f_valid, np.abs(H_anal) / norm_anal, '--', label='Analytical', lw=2)
-            max_val = np.max(np.abs(H_sim_c[f_valid < cfg.f_break]) / norm_sim)
-            
-            axes[1].plot(f_valid, np.unwrap(np.angle(H_sim_c)), label='Simulation', lw=2)
-            axes[1].plot(f_valid, np.unwrap(np.angle(H_anal)), '--', label='Analytical', lw=2)
-            ax.set_ylim(0, 1.3 * max_val)
-
-        SimulationAnalyzer._shade_invalid_frequency_regions(ax, f_valid, cfg.f_min, cfg.f_break)
-        SimulationAnalyzer._shade_invalid_frequency_regions(axes[1], f_valid, cfg.f_min, cfg.f_break)
-        ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c') 
-        ax.set_xscale('log')
-        ax.set_title(f'Magnitude Response [{label}]')
-        ax.set_xlabel('Frequency (Hz)')
-        ax.set_ylabel('Normalized Magnitude')
-        ax.legend()
-        ax.grid(True, which='both', alpha=0.3)
-        
-        axes[1].set_xscale('log')
-        axes[1].set_title(f'Phase Response [{label}]')
-        axes[1].set_xlabel('Frequency (Hz)')
-        axes[1].set_ylabel('Phase (rad)')
-        axes[1].legend()
-        axes[1].grid(True, which='both', alpha=0.3)
-        plt.tight_layout()
-        plt.show()
-
-    @staticmethod
     def _compare_hankel_verification(results_list):
         base_cfg = results_list[0]["config"]
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -1184,63 +1139,6 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
-    def plot_error_analysis(results):
-        if "_hankel_data" not in results: return
-        hd = results["_hankel_data"]
-        cfg = results["config"]
-        f_valid = hd["f_valid"]
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        idx_fc = np.argmin(np.abs(f_valid - cfg.f_c))
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))
-        
-        label = getattr(cfg, "label", cfg.solver_type.upper())
-        
-        max_val = 0
-        max_phase_error = 0
-        min_phase_error = 0
-        
-        for i, (name, data) in enumerate(hd["obs_points"].items()):
-            H_sim, H_anal = data["H_sim"], data["H_analytical"]
-            sim_mag = np.abs(H_sim) / np.abs(H_sim[idx_fc])
-            anal_mag = np.abs(H_anal) / np.abs(H_anal[idx_fc])
-            rel_mag_error = np.abs(sim_mag - anal_mag) / anal_mag
-            
-            mask = (f_valid > cfg.f_min) & (f_valid < cfg.f_break)
-            max_val = np.max([max_val, np.max(rel_mag_error[mask])])
-            print(max_val)
-            
-            phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
-            phase_diff -= phase_diff[idx_fc]
-            phase_error_deg = np.rad2deg(phase_diff)
-            
-            min_phase_error = np.min([min_phase_error, np.min(phase_error_deg[mask])])
-            max_phase_error = np.max([max_phase_error, np.max(phase_error_deg[mask])])
-            
-            axes[0].plot(f_valid, rel_mag_error * 100, label=name, lw=1.5, color=colors[i])
-            axes[1].plot(f_valid, phase_error_deg, label=name, lw=1.5, color=colors[i])
-            
-        for ax in axes:
-            SimulationAnalyzer._shade_invalid_frequency_regions(ax, f_valid, cfg.f_min, cfg.f_break)
-            ax.axvline(cfg.f_c, color='blue', ls=':', alpha=0.5, label=f'f_c')
-            ax.set_xscale('log')
-            ax.legend()
-            ax.grid(True, which='both', alpha=0.3)
-
-        axes[0].set_xlim(f_valid[0], f_valid[-1])
-        axes[0].set_title(f'Relative Magnitude Error [{label}]')
-        axes[0].set_xlabel('Frequency (Hz)')
-        axes[0].set_ylabel('Relative Error (%)')
-        axes[0].set_ylim(0, 300 * max_val)
-        axes[1].set_xlim(f_valid[0], f_valid[-1])
-        axes[1].set_title(f'Phase Error Dispersion [{label}]')
-        axes[1].set_xlabel('Frequency (Hz)')
-        axes[1].set_ylabel('Phase Error (Degrees)')
-        axes[1].set_ylim(1.5 * min_phase_error, 1.5 * max_phase_error)
-
-        plt.tight_layout()
-        plt.show()
-
-    @staticmethod
     def plot_2d_animation(results, fps=40, color_sensitivity=0.01):
         cfg = results["config"]
         hist = results["history"]
@@ -1354,45 +1252,7 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
-    def plot_1d_intensity(results, fps=40):
-        """1D intensity animation of Ez² at the recorder plane (x = x1) over time."""
-        cfg = results["config"]
-        rec = results["recorder"]          # shape: (n_frames, ny) — frame-skipped
-        nodes_y, spans = SimulationAnalyzer._y_axis_with_layers(cfg, physical=True)
-
-        label = getattr(cfg, "label", cfg.solver_type.upper())
-        
-        fig, ax = plt.subplots(figsize=(8, 4))
-        max_int = np.max(rec ** 2) or 1.0
-        line, = ax.plot([], [], color='red', lw=2)
-
-        ax.set_xlim(nodes_y.min(), nodes_y.max())
-        ax.set_ylim(0, max_int * 1.2)
-        ax.set_xlabel("Y-position (m)")
-        ax.set_ylabel("Ez² Intensity")
-
-        for region in spans:
-            ax.axvspan(region["left"], region["right"], color=region["color"], alpha=region["alpha"], label=region["label"])
-        if spans:
-            ax.legend(fontsize=8)
-
-        time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontweight='bold')
-        fs = results["frame_skip"]
-        nt = cfg.nt
-
-        def update(i):
-            line.set_data(nodes_y[:rec.shape[1]], rec[i, :] ** 2)
-            time_text.set_text(f'Intensity | Frame {i*fs}/{nt} | t = {i*fs*cfg.dt*1e9:.3f} ns')
-            return line, time_text
-
-        interval_ms = max(1, int(1000 / fps))
-        ani = FuncAnimation(fig, update, frames=len(rec), interval=interval_ms, blit=True)
-        results["ani_1d"] = ani
-        ax.set_title(f"Ez² after waveguide ({label})")
-        plt.show()
-
-    @staticmethod
-    def plot_cumulative_energy_flux(*results_list, time_index=-1, use_squared=True):
+    def plot_cumulative_energy_flux(*results_list, time_index=-1, use_squared=True, ref=False):
         """Plot the exit time-integrated energy profile normalized per result.
 
         The plotted curve is the recorder at x=x1 integrated over time and then
@@ -1413,7 +1273,7 @@ class SimulationAnalyzer:
 
         for region in spans:
             ax.axvspan(region["left"] / first_lam, region["right"] / first_lam, color=region["color"], alpha=region["alpha"], label=region["label"])
-
+        
         for res in results_list:
             cfg = res["config"]
             y_nodes = getattr(cfg, "y_nodes_phys", None)
@@ -1423,40 +1283,34 @@ class SimulationAnalyzer:
             y = y_nodes[:res["recorder_full"].shape[1]]
             y_lambda = y / (getattr(cfg, "lam_c", 1.0))
 
-            eps_r = np.asarray(getattr(cfg, "epsilon_r", np.ones((1, y.size))))
-
             end_rec = res["recorder_full"]
             end_signal = end_rec ** 2 if use_squared else end_rec
             end_profile = np.trapezoid(end_signal, dx=cfg.dt, axis=0)
 
-            start_rec = res.get("recorder_start_full")
-            if start_rec is None:
-                raise KeyError("plot_cumulative_energy_flux requires 'recorder_start_full' to normalize the end profile.")
-            start_signal = start_rec ** 2 if use_squared else start_rec
+            end_profile_weighted = end_profile
             
-            nt_start = int(cfg.T_start/(cfg.dt))
-            start_profile = np.trapezoid(start_signal[:nt_start], dx=cfg.dt, axis=0)
-
-            end_x_idx = int(getattr(cfg, "x1", 0))
-            start_x_idx = int(getattr(cfg, "x_start", end_x_idx))
-            end_eps_r = np.asarray(eps_r[min(end_x_idx, eps_r.shape[0] - 1), :y.size])
-            start_eps_r = np.asarray(eps_r[min(start_x_idx, eps_r.shape[0] - 1), :y.size])
-
-            end_profile_weighted = end_profile * end_eps_r
-            start_profile_weighted = start_profile * start_eps_r
+            if ref:
+                ref_cfg = ref["config"]
+                y_nodes_ref = getattr(ref_cfg, "y_nodes_phys", None)
+                if y_nodes_ref is None:
+                    y_nodes_ref = np.concatenate(([0], np.cumsum(ref_cfg.dy)))
+                    y_nodes_ref = y_nodes_ref - float(np.sum(ref_cfg.dy[: int(getattr(ref_cfg, "n_pml", 0))]))
+                y_ref = y_nodes_ref[:ref["recorder_full"].shape[1]]
+                
+                end_ref = ref["recorder_full"]
+                end_signal_ref = end_ref ** 2 if use_squared else end_ref
+                end_profile_ref = np.trapezoid(end_signal_ref, dx=ref_cfg.dt, axis=0)
+                
+                # Interpolate end_profile_ref to match current result's y-axis
+                end_profile_ref_interp = np.interp(y, y_ref, end_profile_ref)
+                end_profile_weighted = end_profile / end_profile_ref_interp
             
-            output_total_energy = np.trapezoid(end_profile_weighted, x=y_lambda)
-            input_total_energy = np.trapezoid(start_profile_weighted, x=y_lambda)
-            if input_total_energy == 0:
-                input_total_energy = 1.0
-            end_profile_normalized = end_profile_weighted / input_total_energy
-
             label = getattr(cfg, "label", cfg.solver_type.upper())
-            ax.plot(y_lambda, end_profile_normalized, lw=2, label=f"{label} | Energy kept: {output_total_energy/input_total_energy:.2%}")
+            ax.plot(y_lambda, end_profile_weighted, lw=2, label=f"{label}")
 
         ax.set_xlabel(r"Relative position $y / \lambda_c$")
         ax.set_ylabel(r"Normalized $\int E_z(y,t)^2\,dt$")
-        ax.set_title("Exit integrated energy profile (normalized by input energy)")
+        ax.set_title(r"Cumulative $E_z^2$ Profile at Waveguide Exit")
         ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
@@ -1495,13 +1349,13 @@ if __name__ == "__main__":
         t0 = time.time()
         res = SimulationRunner.execute(
             solver_type="yee",
+            L_wg = 0.1,
+            w_core=0.1,
             frame_skip=10,
-            eps_core=2.5**2,
             finesse=30,
-            free_space_sim=False,
+            free_space_sim=True,
             do_hankel=True,
-            grid_refinement = "gradual",
-            wg_type = "grin",
+            grid_refinement = False,
             recorders=["after"],
             label = r"Yee $\lambda/10$"
         )
@@ -1510,6 +1364,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_grid_spacing(res)
         SimulationAnalyzer.plot_eps_r_colormap(res)
         SimulationAnalyzer.plot_2d_animation(res)
+    
     
     PML_test_Yee = False
     if PML_test_Yee:
@@ -1544,19 +1399,36 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = False
+    FCI_vs_YEE = True
     if FCI_vs_YEE:
+        t0 = time.time()
+        res_yee = SimulationRunner.execute(
+            f = 0.5,
+            solver_type="yee",
+            frame_skip=10,
+            finesse=20,
+            free_space_sim=True,
+            do_hankel=True,
+            L_wg = 1,
+            alpha = 1.2,
+            grid_refinement = 'gradual',
+            recorders=["after"],
+            label = r"Yee"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+        
         t0 = time.time()
         res_fci = SimulationRunner.execute(
             f = 0.5,
             solver_type = "fci",
             schur = False,
-            multi = True,
+            multi = False,
             frame_skip = 10,
-            finesse = 10,
+            L_wg = 1,
+            finesse = 20,
             free_space_sim = True,
-            grid_refinement = 'gradual',
-            alpha = 1.5,
+            grid_refinement = 'step',
             do_hankel = True,
             recorders = ["after"],
             label = "FCI"
@@ -1565,22 +1437,6 @@ if __name__ == "__main__":
         print(f"FCI executed in {t1-t0:.2f} seconds.")
 
         SimulationAnalyzer.plot_2d_animation(res_fci)
-
-        t0 = time.time()
-        res_yee = SimulationRunner.execute(
-            f = 0.5,
-            solver_type="yee",
-            frame_skip=10,
-            finesse=10,
-            free_space_sim=True,
-            do_hankel=True,
-            grid_refinement = 'gradual',
-            alpha = 1.5,
-            recorders=["after"],
-            label = r"Yee"
-        )
-        t1 = time.time()
-        print(f"YEE executed in {t1-t0:.2f} seconds.")
         
         SimulationAnalyzer.plot_2d_animation(res_yee)
         
@@ -1694,7 +1550,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20)
 
-    Phase_error_FCI = True
+    Phase_error_FCI = False
     if Phase_error_FCI:
         t0 = time.time()
         res_fci_10 = SimulationRunner.execute(
@@ -1714,7 +1570,6 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_10)
 
         SimulationAnalyzer.compare_recorders(res_fci_10)
-        SimulationAnalyzer.plot_error_analysis(res_fci_10)
 
     Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
@@ -1800,13 +1655,31 @@ if __name__ == "__main__":
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
 
     Grin_vs_step_Yee = False
-    if Grin_vs_step_Yee: 
+    if Grin_vs_step_Yee:
         t0 = time.time()
-        res_step = SimulationRunner.execute(
+        res_reference = SimulationRunner.execute(
+            lam_c = 1e-6,
             solver_type = "yee",
             frame_skip = 10,
-            finesse = 20,
+            finesse = 30,
+            free_space_sim = True,
+            L_wg = 10,
+            grid_refinement = False,
+            do_hankel = False,
+            recorders = ["after"],
+            label = "Reference"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+         
+        t0 = time.time()
+        res_step = SimulationRunner.execute(
+            lam_c = 1e-6,
+            solver_type = "yee",
+            frame_skip = 10,
+            finesse = 30,
             free_space_sim = False,
+            L_wg = 10,
             grid_refinement = 'gradual',
             wg_type = 'step',
             do_hankel = False,
@@ -1818,11 +1691,13 @@ if __name__ == "__main__":
         
         t0 = time.time()
         res_grin = SimulationRunner.execute(
+            lam_c = 1e-6,
             solver_type = "yee",
-            deps_max = 0.4,
+            deps_max = 0.1,
             frame_skip = 10,
-            finesse = 20,
+            finesse = 30,
             free_space_sim = False,
+            L_wg = 10,
             grid_refinement = 'gradual',
             wg_type = 'grin',
             do_hankel = False,
@@ -1834,7 +1709,8 @@ if __name__ == "__main__":
 
         SimulationAnalyzer.plot_2d_animation(res_step)
         SimulationAnalyzer.plot_2d_animation(res_grin)
-        SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin)
+        SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin, ref=res_reference)
+        SimulationAnalyzer.compare_recorders(res_step, res_grin)
 
     Wavelength_Sweep_Yee = False
     if Wavelength_Sweep_Yee:
