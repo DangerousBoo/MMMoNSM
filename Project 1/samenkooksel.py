@@ -1404,7 +1404,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = True
+    FCI_vs_YEE = False
     if FCI_vs_YEE:
         t0 = time.time()
         res_yee = SimulationRunner.execute(
@@ -1575,7 +1575,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_10)
 
         SimulationAnalyzer.compare_recorders(res_fci_10)
-
+    
     Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
         t0 = time.time()
@@ -1658,6 +1658,51 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p2)
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
+
+    Grid_refinement_FCI = False
+    if Grid_refinement_FCI:    
+        t0 = time.time()
+        res_fci_step = SimulationRunner.execute(
+            f=0.5,
+            solver_type="fci",
+            schur = False,
+            multi = False,
+            frame_skip=10,
+            finesse=20,
+            L_wg = 0.5,
+            w_core = 0.1,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = "step",
+            recorders=["after"],
+            label = r"Step"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        t0 = time.time()
+        res_fci_gradual = SimulationRunner.execute(
+            f=0.5,
+            solver_type="fci",
+            frame_skip=10,
+            schur = False,
+            multi = False,
+            finesse=20,
+            free_space_sim=True,
+            L_wg = 0.5,
+            w_core = 0.1,
+            alpha = 1.2,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            recorders=["after"],
+            label = r"$\alpha = 1.2$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+    
+        SimulationAnalyzer.plot_2d_animation(res_fci_step)
+        SimulationAnalyzer.plot_2d_animation(res_fci_gradual)
+        SimulationAnalyzer.compare_recorders(res_fci_step, res_fci_gradual)
 
     Grin_vs_step_Yee = False
     if Grin_vs_step_Yee:
