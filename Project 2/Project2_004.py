@@ -101,10 +101,18 @@ class SimulationConfig:
         self.U_R += compute_potential(self.x_bar2, self.x_buf2, self.V0)
 
         if self.V_DC != 0:
+            # U = q·V = (-e)·V_DC; right contact is ground (V=0), left contact at V_DC
             bias = -self.e * self.V_DC
-            self.U_R[:self.i_well] += bias
-            x_well = self.x[self.i_well:self.i_bar2]
-            self.U_R[self.i_well:self.i_bar2] += bias * (1 - (x_well - self.x_well) / (self.x_bar2 - self.x_well))
+            
+            # Left bulk (absorber + buffer): constant offset at V_DC
+            self.U_R[:self.i_bar1] += bias
+            
+            # Device region (barrier1 + well + barrier2): linear tilt from V_DC (left) to 0 (right/ground)
+            x_dev = self.x[self.i_bar1:self.i_buf2]
+            tilt = bias * (1.0 - (x_dev - self.x_bar1) / (self.x_buf2 - self.x_bar1))
+            self.U_R[self.i_bar1:self.i_buf2] += tilt
+            
+            # Right bulk (buffer + absorber): at ground, no shift
             
         i_arr = np.arange(self.n_layer)
         dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
@@ -416,14 +424,14 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
-    results_barrier = SimulationRunner.execute(n_y=1, n_z=1, V0=0.6, V_DC=-0.2, T_total=1000.0e-15, E_target=0.55, frame_skip=500)
-    results_free = SimulationRunner.execute(n_y=1, n_z=1, V0=0.0, V_DC=0.0, T_total=1000.0e-15, E_target=0.55, frame_skip=500, dt=results_barrier["config"].dt)
+    results_barrier = SimulationRunner.execute(n_y=1, n_z=1, V0=0.6, V_DC=-0.0, T_total=1000.0e-15, E_target=0.35, frame_skip=500)
+    results_free = SimulationRunner.execute(n_y=1, n_z=1, V0=0.0, V_DC=0.0, T_total=1000.0e-15, E_target=0.35, frame_skip=500, dt=results_barrier["config"].dt)
     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
     SimulationRunner.plot_animation(results_barrier)
     
     # 2. Extract I-V Curve showing Negative Differential Resistance
     # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    voltages = np.linspace(0, 0.05, 100)
+    voltages = np.linspace(0, 0.05, 50)
     base_sim_kwargs = {
         "V0": 0.6, "T_total": 10000.0e-15, 
         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
