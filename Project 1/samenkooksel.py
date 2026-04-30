@@ -519,8 +519,8 @@ class YeeSolver:
 
         sub_v = cfg.v_local[1:-1, 1:-1]
         sub_z = cfg.Z_local[1:-1, 1:-1]
-        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
-        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
         self.inv_dx, self.inv_dy = 1.0 / cfg.dx, 1.0 / cfg.dy
@@ -548,7 +548,7 @@ class YeeSolver:
         self.Ez_ddot[ix, iy] = (self.coef_n * self.Ez_ddot[ix, iy] - self.coef_j * self.Jc[ix, iy] + curl_h) / self.coef_p
         
         avg_Ez_ddot = self.Ez_ddot[ix, iy] + self.Ez_ddot_old[ix, iy]
-        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma[ix, iy] * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
+        self.Jc[ix, iy] = (self.am * self.Jc[ix, iy] + cfg.sigma * cfg.Z_local[ix, iy] * avg_Ez_ddot) / self.ap
 
         
         self.Ez_dot_old[:] = self.Ez_dot
@@ -1516,7 +1516,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_eps_r_colormap(res)
         SimulationAnalyzer.plot_2d_animation(res)
     
-    PML_test_Yee = True
+    PML_test_Yee = False
     if PML_test_Yee:
         n_list = [10, 20, 30, 40]
         m_list = [3, 4, 5]
@@ -1549,7 +1549,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = True
+    FCI_vs_YEE = False
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci = SimulationRunner.execute(
@@ -1642,7 +1642,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_30)      
         SimulationAnalyzer.compare_recorders(res_yee_10, res_yee_20, res_yee_30)
 
-    Finesse_FCI = True
+    Finesse_FCI = False
     if Finesse_FCI:
         t0 = time.time()
         res_fci_10 = SimulationRunner.execute(
@@ -1698,6 +1698,28 @@ if __name__ == "__main__":
         
         # SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20)
+
+    Phase_error_FCI = True
+    if Phase_error_FCI:
+        t0 = time.time()
+        res_fci_10 = SimulationRunner.execute(
+            solver_type="fci",
+            schur = False,
+            multi = False,
+            frame_skip=10,
+            finesse=10,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            label = r"FCI $\lambda/10$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        SimulationAnalyzer.plot_2d_animation(res_fci_10)
+
+        SimulationAnalyzer.compare_recorders(res_fci_10)
+        SimulationAnalyzer.plot_error_analysis(res_fci_10)
 
     Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
