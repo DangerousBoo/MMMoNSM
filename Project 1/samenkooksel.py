@@ -1340,9 +1340,12 @@ class SimulationAnalyzer:
             SimulationAnalyzer._compare_error_analysis(results_list)
 
 # ==============================================================================
-# Execution Example
+# Execution
 # ==============================================================================
 if __name__ == "__main__":
+    
+    # The following True/False flags control which simulations and analyses are run when executing this script.
+    # These are the once used to generate the figures in the paper. 
     
     # Runs a single Yee simulation in free-space (no waveguide core) and plots
     # the grid spacing, the permittivity colormap, and the 2D field animation.
