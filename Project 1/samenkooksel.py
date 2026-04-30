@@ -34,8 +34,8 @@ class SimulationConfig:
         self.Z0         = np.sqrt(self.mu0 / self.epsilon0)
         
         # Material Properties
-        self.eps_clad   = 2.218**2
-        self.eps_core   = 2.22**2
+        self.eps_clad   = 3.9
+        self.eps_core   = 11.9
         self.gamma_f    = 2.0
         self.sigma_wall = getattr(self, "sigma_wall", 3.5e7) # Conductivity of the metallic walls, set to 0 for PEC
 
@@ -56,7 +56,7 @@ class SimulationConfig:
         
         # Dimensions expressed in amount of wavelengths
         f = getattr(self, "f", 1.0)
-        self.L_wg   = f * 6 * self.lam_c
+        self.L_wg   = getattr(self, "L_wg", 6) * f * self.lam_c
         self.w_core = getattr(self, "w_core",1.5) * f * self.lam_c
         self.w_clad = f * 1 * self.lam_c
         self.w_air  = f * 0.5 * self.lam_c
@@ -67,7 +67,7 @@ class SimulationConfig:
         self.wall_count = 2 if self.double_wall else 1
         self.L      = self.Ll + self.d + self.wall_count * self.t_m + self.L_wg + self.Lr
         self.W      = 2 * self.w_air + 2 * self.w_clad + self.w_core
-        self.T      = self.t0 + 4*self.sig_t + (self.d + self.wall_count * self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg + self.Lr) / self.c
+        self.T      = self.t0 + 3*self.sig_t + (self.d + self.wall_count * self.t_m + np.sqrt(self.eps_core) * self.L_wg) / self.c
         self.finesse = kwargs.get("finesse", 30)
 
             
@@ -100,8 +100,8 @@ class SimulationConfig:
             self.gamma      = self.gamma_f
         else:
             self.epsilon_r  = np.ones((self.nx, self.ny))
-            self.sigma      = np.zeros((self.nx-2, self.ny-2))
-            self.gamma      = np.zeros((self.nx-2, self.ny-2))
+            self.sigma      = np.zeros((self.nx, self.ny))
+            self.gamma      = np.zeros((self.nx, self.ny))
 
         self.dx_f = self.dx.min()
         self.dy_f = self.dy.min()
@@ -451,12 +451,12 @@ class SimulationConfig:
             else:
                 self.epsilon_r[core_slice] = self.eps_core
             
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
-        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift),   :int(0.4*self.n_core + self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+        self.sigma[int(self.n_Ll + self.n_d - 1 + x_shift), - int(0.4*self.n_core + self.n_air + self.n_clad + y_shift):] = self.sigma_wall
         if self.double_wall:
             second_wall_x = int(self.n_Ll + self.n_d + self.n_wg + x_shift)
-            self.sigma[second_wall_x,   :int(self.n_air + self.n_clad + y_shift)] = self.sigma_wall
-            self.sigma[second_wall_x, - int(self.n_air + self.n_clad + y_shift):] = self.sigma_wall
+            self.sigma[second_wall_x,   :int(0.4*self.n_core + self.n_air + self.n_clad + y_shift)] = self.sigma_wall
+            self.sigma[second_wall_x, - int(0.4*self.n_core + self.n_air + self.n_clad + y_shift):] = self.sigma_wall
 
 # ==============================================================================
 # 2. Solvers
@@ -514,13 +514,17 @@ class YeeSolver:
 
         self.bz_h = 1.0 / (cfg.c * cfg.dt)
         self.bz_e = 1.0 / (cfg.v_local * cfg.dt)
-        self.ap = 2.0 * cfg.gamma / cfg.dt + 1.0
-        self.am = 2.0 * cfg.gamma / cfg.dt - 1.0
 
         sub_v = cfg.v_local[1:-1, 1:-1]
         sub_z = cfg.Z_local[1:-1, 1:-1]
-        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
-        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * cfg.sigma[1:-1, 1:-1] / (2.0 * self.ap))
+        sub_gamma = cfg.gamma[1:-1, 1:-1]
+        sub_sigma = cfg.sigma[1:-1, 1:-1]
+        
+        self.ap = 2.0 * sub_gamma / cfg.dt + 1.0
+        self.am = 2.0 * sub_gamma / cfg.dt - 1.0
+        
+        self.coef_n = (1.0 / (sub_v * cfg.dt) - sub_z * sub_sigma / (2.0 * self.ap))
+        self.coef_p = (1.0 / (sub_v * cfg.dt) + sub_z * sub_sigma / (2.0 * self.ap))
         self.coef_j = 0.5 * (1.0 + self.am / self.ap)
 
         self.inv_dx, self.inv_dy = 1.0 / cfg.dx, 1.0 / cfg.dy
@@ -1397,7 +1401,7 @@ class SimulationAnalyzer:
         plt.show()
 
     @staticmethod
-    def plot_cumulative_energy_flux(*results_list, time_index=-1, use_squared=True):
+    def plot_cumulative_energy_flux(*results_list, time_index=-1, use_squared=True, ref=False):
         """Plot the exit time-integrated energy profile normalized per result.
 
         The plotted curve is the recorder at x=x1 integrated over time and then
@@ -1418,7 +1422,7 @@ class SimulationAnalyzer:
 
         for region in spans:
             ax.axvspan(region["left"] / first_lam, region["right"] / first_lam, color=region["color"], alpha=region["alpha"], label=region["label"])
-
+        
         for res in results_list:
             cfg = res["config"]
             y_nodes = getattr(cfg, "y_nodes_phys", None)
@@ -1428,36 +1432,30 @@ class SimulationAnalyzer:
             y = y_nodes[:res["recorder_full"].shape[1]]
             y_lambda = y / (getattr(cfg, "lam_c", 1.0))
 
-            eps_r = np.asarray(getattr(cfg, "epsilon_r", np.ones((1, y.size))))
-
             end_rec = res["recorder_full"]
             end_signal = end_rec ** 2 if use_squared else end_rec
             end_profile = np.trapezoid(end_signal, dx=cfg.dt, axis=0)
 
-            start_rec = res.get("recorder_start_full")
-            if start_rec is None:
-                raise KeyError("plot_cumulative_energy_flux requires 'recorder_start_full' to normalize the end profile.")
-            start_signal = start_rec ** 2 if use_squared else start_rec
+            end_profile_weighted = end_profile
             
-            nt_start = int(cfg.T_start/(cfg.dt))
-            start_profile = np.trapezoid(start_signal[:nt_start], dx=cfg.dt, axis=0)
-
-            end_x_idx = int(getattr(cfg, "x1", 0))
-            start_x_idx = int(getattr(cfg, "x_start", end_x_idx))
-            end_eps_r = np.asarray(eps_r[min(end_x_idx, eps_r.shape[0] - 1), :y.size])
-            start_eps_r = np.asarray(eps_r[min(start_x_idx, eps_r.shape[0] - 1), :y.size])
-
-            end_profile_weighted = end_profile * end_eps_r
-            start_profile_weighted = start_profile * start_eps_r
+            if ref:
+                ref_cfg = ref["config"]
+                y_nodes_ref = getattr(ref_cfg, "y_nodes_phys", None)
+                if y_nodes_ref is None:
+                    y_nodes_ref = np.concatenate(([0], np.cumsum(ref_cfg.dy)))
+                    y_nodes_ref = y_nodes_ref - float(np.sum(ref_cfg.dy[: int(getattr(ref_cfg, "n_pml", 0))]))
+                y_ref = y_nodes_ref[:ref["recorder_full"].shape[1]]
+                
+                end_ref = ref["recorder_full"]
+                end_signal_ref = end_ref ** 2 if use_squared else end_ref
+                end_profile_ref = np.trapezoid(end_signal_ref, dx=ref_cfg.dt, axis=0)
+                
+                # Interpolate end_profile_ref to match current result's y-axis
+                end_profile_ref_interp = np.interp(y, y_ref, end_profile_ref)
+                end_profile_weighted = end_profile / end_profile_ref_interp
             
-            output_total_energy = np.trapezoid(end_profile_weighted, x=y_lambda)
-            input_total_energy = np.trapezoid(start_profile_weighted, x=y_lambda)
-            if input_total_energy == 0:
-                input_total_energy = 1.0
-            end_profile_normalized = end_profile_weighted / input_total_energy
-
             label = getattr(cfg, "label", cfg.solver_type.upper())
-            ax.plot(y_lambda, end_profile_normalized, lw=2, label=f"{label} | Energy kept: {output_total_energy/input_total_energy:.2%}")
+            ax.plot(y_lambda, end_profile_weighted, lw=2, label=f"{label}")
 
         ax.set_xlabel(r"Relative position $y / \lambda_c$")
         ax.set_ylabel(r"Normalized $\int E_z(y,t)^2\,dt$")
@@ -1516,7 +1514,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_eps_r_colormap(res)
         SimulationAnalyzer.plot_2d_animation(res)
     
-    PML_test_Yee = True
+    PML_test_Yee = False
     if PML_test_Yee:
         n_list = [10, 20, 30, 40]
         m_list = [3, 4, 5]
@@ -1549,7 +1547,7 @@ if __name__ == "__main__":
             elif group:
                 SimulationAnalyzer.compare_recorders(*group)
         
-    FCI_vs_YEE = True
+    FCI_vs_YEE = False
     if FCI_vs_YEE:
         t0 = time.time()
         res_fci = SimulationRunner.execute(
@@ -1694,7 +1692,7 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_fci_30)      
         SimulationAnalyzer.compare_recorders(res_fci_10, res_fci_20, res_fci_30)
 
-    Grid_refinement_Yee = True
+    Grid_refinement_Yee = False
     if Grid_refinement_Yee:    
         t0 = time.time()
         res_yee_step = SimulationRunner.execute(
@@ -1777,14 +1775,31 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
 
-    Grin_vs_step_Yee = False
-    if Grin_vs_step_Yee: 
+    Grin_vs_step_Yee = True
+    if Grin_vs_step_Yee:
+        t0 = time.time()
+        res_reference = SimulationRunner.execute(
+            solver_type = "yee",
+            frame_skip = 10,
+            finesse = 20,
+            free_space_sim = True,
+            L_wg = 10,
+            grid_refinement = 'gradual',
+            wg_type = 'step',
+            do_hankel = False,
+            recorders = ["after"],
+            label = "Reference"
+        )
+        t1 = time.time()
+        print(f"YEE executed in {t1-t0:.2f} seconds.")
+         
         t0 = time.time()
         res_step = SimulationRunner.execute(
             solver_type = "yee",
             frame_skip = 10,
             finesse = 20,
             free_space_sim = False,
+            L_wg = 10,
             grid_refinement = 'gradual',
             wg_type = 'step',
             do_hankel = False,
@@ -1797,10 +1812,11 @@ if __name__ == "__main__":
         t0 = time.time()
         res_grin = SimulationRunner.execute(
             solver_type = "yee",
-            deps_max = 0.4,
+            deps_max = 0.1,
             frame_skip = 10,
             finesse = 20,
             free_space_sim = False,
+            L_wg = 10,
             grid_refinement = 'gradual',
             wg_type = 'grin',
             do_hankel = False,
@@ -1812,7 +1828,8 @@ if __name__ == "__main__":
 
         SimulationAnalyzer.plot_2d_animation(res_step)
         SimulationAnalyzer.plot_2d_animation(res_grin)
-        SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin)
+        SimulationAnalyzer.plot_cumulative_energy_flux(res_step, res_grin, res_reference, ref=res_reference)
+        SimulationAnalyzer.compare_recorders(res_step, res_grin)
 
     Wavelength_Sweep_Yee = False
     if Wavelength_Sweep_Yee:
