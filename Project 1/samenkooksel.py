@@ -1371,14 +1371,17 @@ class SimulationAnalyzer:
             SimulationAnalyzer._compare_error_analysis(results_list)
 
 # ==============================================================================
-# Execution Example
+# Execution
 # ==============================================================================
 if __name__ == "__main__":
     
-    # Runs a single Yee simulation WITH the AR coating and step-index waveguide.
-    # Plots the grid spacing, the permittivity colormap (AR layer visible as intermediate
-    # epsilon just before the wall), and the 2D field animation.
-    Single_test = True
+    # The following True/False flags control which simulations and analyses are run when executing this script.
+    # These are the once used to generate the figures in the paper. 
+    
+    # Runs a single Yee simulation in free-space (no waveguide core) and plots
+    # the grid spacing, the permittivity colormap, and the 2D field animation.
+    # Useful as a quick sanity check that the solver and domain are set up correctly.
+    Single_test = False
     if Single_test:
         t0 = time.time()
         res = SimulationRunner.execute(
@@ -1699,6 +1702,52 @@ if __name__ == "__main__":
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p2)
         SimulationAnalyzer.plot_2d_animation(res_yee_gradual_1p05)
         SimulationAnalyzer.compare_recorders(res_yee_step, res_yee_gradual_2, res_yee_gradual_1p5, res_yee_gradual_1p2, res_yee_gradual_1p05)
+
+    # Compares the effect of using a step grid refineement vs. a gradual grid refinement for the FCI solver.
+    Grid_refinement_FCI = False
+    if Grid_refinement_FCI:    
+        t0 = time.time()
+        res_fci_step = SimulationRunner.execute(
+            f=0.5,
+            solver_type="fci",
+            schur = False,
+            multi = False,
+            frame_skip=10,
+            finesse=20,
+            L_wg = 0.5,
+            w_core = 0.1,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = "step",
+            recorders=["after"],
+            label = r"Step"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+        
+        t0 = time.time()
+        res_fci_gradual = SimulationRunner.execute(
+            f=0.5,
+            solver_type="fci",
+            frame_skip=10,
+            schur = False,
+            multi = False,
+            finesse=20,
+            free_space_sim=True,
+            L_wg = 0.5,
+            w_core = 0.1,
+            alpha = 1.2,
+            do_hankel=True,
+            grid_refinement = "gradual",
+            recorders=["after"],
+            label = r"$\alpha = 1.2$"
+        )
+        t1 = time.time()
+        print(f"FCI executed in {t1-t0:.2f} seconds.")
+    
+        SimulationAnalyzer.plot_2d_animation(res_fci_step)
+        SimulationAnalyzer.plot_2d_animation(res_fci_gradual)
+        SimulationAnalyzer.compare_recorders(res_fci_step, res_fci_gradual)
 
     # Compares a step-index waveguide against a GRIN (graded-index) waveguide using a free-space run as the flux reference. 
     Grin_vs_step_Yee = False
