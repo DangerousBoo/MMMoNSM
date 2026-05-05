@@ -20,7 +20,7 @@ class SimulationConfig:
         
         # Domain Dimensions (1D target)
         self.dx         = getattr(self, "dx", 0.5e-9)
-        self.L_buffer   = getattr(self, "L_buffer", 200e-9)
+        self.L_buffer   = getattr(self, "L_buffer", 500e-9)
         self.L_absorb   = getattr(self, "L_absorb", 50e-9)
         self.L_barrier1 = getattr(self, "L_barrier1", 10e-9)
         self.L_well     = getattr(self, "L_well", 30e-9)
@@ -81,11 +81,14 @@ class SimulationConfig:
         self.nt = int(np.ceil(self.T_total / self.dt))
         
         # Initial Wavepacket Setup
-        self.E_target = getattr(self, "E_target", 0.2) * self.e # input E
-        K_E = self.E_target - self.U_R[0]  # Kinetic energy in the left buffer
-        self.k_x = np.sqrt(2 * self.m_star * max(0, K_E)) / self.hbar
-        self.x_0 = self.x_abs1 + self.L_buffer * 0.3
-        self.sigma_x = getattr(self, "sigma_x", 15e-9)
+        # E_target = kinetic energy at the injection point (bias-independent).
+        # This ensures k_x > 0 regardless of the applied V_DC.
+        self.E_target  = getattr(self, "E_target", 0.2) * self.e  # KE at injection point
+        self.x_0       = self.x_abs1 + self.L_buffer * 0.3
+        self.sigma_x   = getattr(self, "sigma_x", 15e-9)
+        i_x0           = int(self.x_0 / self.dx)
+        self.total_E   = self.E_target + self.U_R[i_x0]  # True total energy = KE + U(x_0)
+        self.k_x       = np.sqrt(2 * self.m_star * self.E_target) / self.hbar  # Always real & positive
 
     def _build_potentials(self):
         # self.U_R[self.i_bar1:self.i_well] = self.V0 # InP Barrier 1
@@ -101,24 +104,19 @@ class SimulationConfig:
         self.U_R += compute_potential(self.x_bar2, self.x_buf2, self.V0)
 
         if self.V_DC != 0:
-            # U = q·V = (-e)·V_DC; right contact is ground (V=0), left contact at V_DC
-            bias = -self.e * self.V_DC
-            
-            # Left bulk (absorber + buffer): constant offset at V_DC
-            self.U_R[:self.i_bar1] += bias
-            
-            # Device region (barrier1 + well + barrier2): linear tilt from V_DC (left) to 0 (right/ground)
-            x_dev = self.x[self.i_bar1:self.i_buf2]
-            tilt = bias * (1.0 - (x_dev - self.x_bar1) / (self.x_buf2 - self.x_bar1))
+            # Positive V_DC should LOWER the potential energy on the left.
+            bias_energy = -self.e * self.V_DC 
+            # constant offset on left side (as usual with with diodes)
+            self.U_R[:self.i_bar1] += bias_energy
+            x_dev   = self.x[self.i_bar1:self.i_buf2]
+            tilt    = bias_energy * (1.0 - (x_dev - self.x_bar1) / (self.x_buf2 - self.x_bar1))
             self.U_R[self.i_bar1:self.i_buf2] += tilt
-            
-            # Right bulk (buffer + absorber): at ground, no shift
             
         i_arr = np.arange(self.n_layer)
         dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
-        abs_V = self.V0 if self.V0 != 0 else 0.2 * self.e # laatste is vr de free space sim
-        self.U_I[:self.n_layer] = 2.0 * abs_V * dist_factor
-        self.U_I[-self.n_layer:] = 2.0 * abs_V * dist_factor[::-1]
+        abs_V = self.V0 if self.V0 != 0 else 0.2 * self.e   
+        self.U_I[:self.n_layer] = 1.0 * abs_V * dist_factor
+        self.U_I[-self.n_layer:] = 1.0 * abs_V * dist_factor[::-1]
 
 class SchrodingerSolver:
     def __init__(self, cfg):
@@ -134,7 +132,10 @@ class SchrodingerSolver:
         phase = cfg.k_x * cfg.x
         
         self.psi_I = env * np.sin(phase)
-        self.psi_R = env * np.cos(phase + cfg.E_target * cfg.dt / (2 * cfg.hbar)) # figure out why this term has to be here, its 4am so too late to think i just vibe code
+        # The half-step phase offset compensates for the leapfrog staggering:
+        # psi_R is evaluated at t=+dt/2 relative to psi_I at t=0, so we advance
+        # the phase by (total_E * dt/2) / hbar to keep them in sync.
+        self.psi_R = env * np.cos(phase + cfg.total_E * cfg.dt / (2 * cfg.hbar))
 
     def _lap(self, psi):
         lap = np.zeros_like(psi)
@@ -227,7 +228,7 @@ class TransmissionAnalyzer:
         k_0 = cfg.k_x
         sigma_k = 1.0 / (2.0 * cfg.sigma_x)
         sigma_E_eV = ((cfg.hbar**2 * k_0 / cfg.m_star) * sigma_k) / cfg.e
-        E_center_eV = cfg.E_target / cfg.e
+        E_center_eV = cfg.total_E / cfg.e  # plot window centered on total energy of the packet
         
         E_min = E_center_eV - 3 * sigma_E_eV
         E_max = E_center_eV + 3 * sigma_E_eV
@@ -338,69 +339,62 @@ class IVCharacteristic:
         mu_L = 22.436e-3 * e 
         mu_R = mu_L - e * V
         
-        cfg_dummy = SimulationConfig(**base_kwargs)
-        total_current = 0.0
+        cfg_1d_kwargs = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V}
+        cfg_dummy = SimulationConfig(**cfg_1d_kwargs)
+        dummy_dt = cfg_dummy.dt
         
-        # Double sum over transversal modes
-        for ny in range(1, 6):
-            for nz in range(1, 6):
-                E_trans = (cfg_dummy.hbar**2 / (2 * cfg_dummy.m_star)) * ((np.pi * ny / cfg_dummy.Ly)**2 + (np.pi * nz / cfg_dummy.Lz)**2)
+        #since E_n,m just introduces a constant shift, we only need to run the sim once
+        res_f = SimulationRunner.execute(**{**cfg_1d_kwargs, "V_DC": 0.0, "V0": 0.0, "dt": dummy_dt}, disable_tqdm=True, record_history=False)
+        res_b = SimulationRunner.execute(**{**cfg_1d_kwargs, "V_DC": V, "dt": dummy_dt}, disable_tqdm=True, record_history=False)
+        
+        cfg = res_b["config"]
+        psi_bar = res_b["time_signal_R"] + 1j * res_b["time_signal_I"]
+        psi_free = res_f["time_signal_R"] + 1j * res_f["time_signal_I"]
+        
+        N_pad = cfg.nt * 8
+        fft_bar = fft(psi_bar, n=N_pad)
+        fft_free = fft(psi_free, n=N_pad)
+        freqs = fftfreq(N_pad, cfg.dt)
+        
+        E_total_J = -(2 * np.pi * cfg.hbar * freqs)
+        pos_mask = E_total_J > 0
+        
+        E_J = E_total_J[pos_mask]
+        Psi_b = fft_bar[pos_mask]
+        Psi_f = fft_free[pos_mask]
                 
-                # Skip simulating modes that are absolutely empty (above Fermi limit)
-                if E_trans > mu_L + 6 * k_B * Temp:
+        U_obs_bar = cfg.U_R[res_b["record_ix"]]
+        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
+                
+        valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
+        E_J = E_J[valid]
+                
+        k_bar = np.sqrt(2 * cfg.m_star * (E_J - U_obs_bar))
+        k_free = np.sqrt(2 * cfg.m_star * (E_J - U_obs_free))
+                
+        T_E = (k_bar / k_free) * (np.abs(Psi_b[valid])**2 / np.abs(Psi_f[valid])**2)
+        
+        total_current = 0.0
+        cfg_base = SimulationConfig(**base_kwargs)
+
+        def fermi(E, mu):
+            return 1.0 / (np.exp(np.clip((E - mu)/(k_B * Temp), -100, 100)) + 1.0)
+
+        for ny in range(1,6):
+            for nz in range(1,6):
+                # This is the constant energy shift from the transversal modes, filter for when theyre too low in energy
+                E_ny_nz = E_J - (cfg_base.hbar*np.pi/cfg_base.Ly)**2 * (ny**2 + nz**2) / (2*cfg_base.m_star)
+                if E_ny_nz > mu_L + 6 * k_B * Temp:
                     continue
-                    
-                mode_kwargs = {**base_kwargs, "n_y": ny, "n_z": nz}
+
+                E_total = E_ny_nz + E_J
+
+                f_L = fermi(E_total, mu_L)
+                f_R = fermi(E_total, mu_R)
                 
-                # Free-space normalization for this specific transversal mode
-                # Since V0=0.6 barrier imposes a mathematically smaller dt_max than free-space, use the barrier dt!
-                safe_dt = SimulationConfig(**{**mode_kwargs, "V_DC": V}).dt
-                
-                res_f = SimulationRunner.execute(**{**mode_kwargs, "V_DC": 0.0, "V0": 0.0, "dt": safe_dt}, disable_tqdm=True, record_history=False)
-                res_b = SimulationRunner.execute(**{**mode_kwargs, "V_DC": V, "dt": safe_dt}, disable_tqdm=True, record_history=False)
-                
-                cfg = res_b["config"]
-                psi_bar = res_b["time_signal_R"] + 1j * res_b["time_signal_I"]
-                psi_free = res_f["time_signal_R"] + 1j * res_f["time_signal_I"]
-                
-                N_pad = cfg.nt * 8
-                fft_bar = fft(psi_bar, n=N_pad)
-                fft_free = fft(psi_free, n=N_pad)
-                freqs = fftfreq(N_pad, cfg.dt)
-                
-                E_total_J = -(2 * np.pi * cfg.hbar * freqs)
-                pos_mask = E_total_J > 0
-                
-                E_J = E_total_J[pos_mask]
-                Psi_b = fft_bar[pos_mask]
-                Psi_f = fft_free[pos_mask]
-                
-                U_obs_bar = cfg.U_R[res_b["record_ix"]]
-                U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
-                
-                valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
-                E_J = E_J[valid]
-                
-                k_bar = np.sqrt(2 * cfg.m_star * (E_J - U_obs_bar))
-                k_free = np.sqrt(2 * cfg.m_star * (E_J - U_obs_free))
-                
-                T_E = (k_bar / k_free) * (np.abs(Psi_b[valid])**2 / np.abs(Psi_f[valid])**2)
-                
-                # Integration mask for Landauer window
-                int_mask = (E_J > cfg.E_trans) & (E_J < mu_L + 6*k_B*Temp)
-                E_int = E_J[int_mask]
-                T_int = T_E[int_mask]
-                
-                def fermi(E, mu):
-                    return 1.0 / (np.exp(np.clip((E - mu)/(k_B * Temp), -100, 100)) + 1.0)
-                    
-                f_L = fermi(E_int, mu_L)
-                f_R = fermi(E_int, mu_R)
-                
-                I_mode = (2 * e / h) * np.trapezoid(T_int * (f_L - f_R), E_int)
+                I_mode = (2 * e / h) * np.trapezoid(T_E * (f_L - f_R), E_J)
                 total_current += I_mode
-                
-        return -total_current
+        return total_current
 
     @staticmethod
     def plot_IV(V_dc_arr, base_kwargs):
@@ -423,17 +417,32 @@ if __name__ == '__main__':
     # === RUN EXPERIMENT ===
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
-    # # 1. Single Voltage Spectrum (Uncomment to view)
-    results_barrier = SimulationRunner.execute(n_y=1, n_z=1, V0=0.6, V_DC=-0.0, T_total=1000.0e-15, E_target=0.35, frame_skip=500)
-    results_free = SimulationRunner.execute(n_y=1, n_z=1, V0=0.0, V_DC=0.0, T_total=1000.0e-15, E_target=0.35, frame_skip=500, dt=results_barrier["config"].dt)
-    TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    SimulationRunner.plot_animation(results_barrier)
+    # # # 1. Single Voltage Spectrum
+    # results_barrier = SimulationRunner.execute(
+    #     n_y = 1, 
+    #     n_z = 1, 
+    #     V0 = 0.6, 
+    #     V_DC = -0.5, 
+    #     T_total = 1000.0e-15, 
+    #     E_target = 0.3, 
+    #     frame_skip = 500)
+    # results_free = SimulationRunner.execute(
+    #     n_y = 1, 
+    #     n_z = 1, 
+    #     V0 = 0.0, 
+    #     V_DC = 0.0, 
+    #     T_total = 1000.0e-15, 
+    #     E_target = 0.3, 
+    #     frame_skip = 500, 
+    #     dt = results_barrier["config"].dt)
+    # TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    # SimulationRunner.plot_animation(results_barrier)
     
     # 2. Extract I-V Curve showing Negative Differential Resistance
     # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
     voltages = np.linspace(0, 0.05, 50)
     base_sim_kwargs = {
-        "V0": 0.6, "T_total": 10000.0e-15, 
+        "V0": 0.6, "T_total": 1000.0e-15, 
         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
         "frame_skip": 1000 # Only doing integration, not viewing animation
     }

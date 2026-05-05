@@ -71,23 +71,7 @@ class SimulationConfig:
         self.alpha = getattr(self, "alpha", 1.05)
         
         self.n_pml = max(0, int(getattr(self, "n_pml", 30)))
-
-        # --- Antireflective coating (quarter-wave, source-side of metal wall) ---
-        # Match from free space (n=1) to waveguide cladding (n=sqrt(eps_clad)).
-        # The metal wall thickness is updated to 1 skin-depth so the field can
-        # couple through the aperture without being over-damped.
-        if not getattr(self, "free_space_sim", False):
-            omega_c       = 2.0 * np.pi * self.f_c
-            self.eps_AR   = np.sqrt(self.eps_clad)          # ε_AR = sqrt(1 · ε_clad)
-            self.t_AR     = self.lam_c / (4.0 * np.sqrt(self.eps_AR))  # quarter-wave
-            if self.sigma_wall > 0:
-                # 1 skin depth — thin enough to let the field diffract through the aperture
-                delta_skin = np.sqrt(2.0 / (omega_c * self.mu0 * self.sigma_wall))
-                self.t_m   = max(delta_skin, self.lam_c / self.finesse)
-        else:
-            self.eps_AR = None
-            self.t_AR   = None
-
+        
         # Build Grids
         self._build_dx()
         self._build_dy()
@@ -469,19 +453,6 @@ class SimulationConfig:
             second_wall_x = int(self.n_Ll + self.n_d + self.n_wg + x_shift)
             self.sigma[second_wall_x,   :int(0.4*self.n_core + self.n_air + self.n_clad + y_shift)] = self.sigma_wall
             self.sigma[second_wall_x, - int(0.4*self.n_core + self.n_air + self.n_clad + y_shift):] = self.sigma_wall
-
-        # --- AR coating: last t_AR worth of gap cells get eps_AR ---
-        # This places a quarter-wave dielectric layer between the free-space
-        # source region and the metal wall, reducing the impedance step from
-        # n=1 to n=sqrt(eps_clad) via the geometric-mean n_AR=sqrt(eps_clad)^0.5.
-        if getattr(self, "eps_AR", None) is not None:
-            dx_gap = self.d / max(1, self.n_d)
-            n_ar   = max(1, int(round(self.t_AR / dx_gap)))
-            ar_x0  = int(self.n_Ll + self.n_d - 1 - n_ar + x_shift)
-            ar_x1  = int(self.n_Ll + self.n_d - 1 + x_shift)   # wall node itself kept as-is
-            self.epsilon_r[ar_x0:ar_x1, y_shift : self.ny - y_shift] = self.eps_AR
-            print(f"AR coating: eps_AR={self.eps_AR:.3f}, t_AR={self.t_AR*1e9:.2f} nm, "
-                  f"{n_ar} cells, t_m (skin depth)={self.t_m*1e9:.2f} nm")
 
 # ==============================================================================
 # 2. Solvers
@@ -1096,7 +1067,6 @@ class SimulationAnalyzer:
     def _compare_error_analysis(results_list):
         base_cfg = results_list[0]["config"]
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
         colors = plt.cm.tab10(np.linspace(0, 1, 10))
         max_val = 0
         max_phase_error = 0
@@ -1136,7 +1106,7 @@ class SimulationAnalyzer:
             phase_diff = np.unwrap(np.angle(H_sim)) - np.unwrap(np.angle(H_anal))
             phase_diff -= phase_diff[idx_fc]
             phase_error_deg = np.rad2deg(phase_diff)
-
+            
             rms_phase_error = np.sqrt(np.mean(phase_error_deg[mask]**2)) if np.any(mask) else 0
             print(f"{label}: RMS Phase Error in valid band = {np.round(rms_phase_error, 2)} degrees")
 
@@ -1167,7 +1137,6 @@ class SimulationAnalyzer:
 
         plt.tight_layout()
         plt.show()
-
 
     @staticmethod
     def plot_2d_animation(results, fps=40, color_sensitivity=0.01):
@@ -1375,30 +1344,29 @@ class SimulationAnalyzer:
 # ==============================================================================
 if __name__ == "__main__":
     
-    # Runs a single Yee simulation WITH the AR coating and step-index waveguide.
-    # Plots the grid spacing, the permittivity colormap (AR layer visible as intermediate
-    # epsilon just before the wall), and the 2D field animation.
-    Single_test = True
+    # Runs a single Yee simulation in free-space (no waveguide core) and plots
+    # the grid spacing, the permittivity colormap, and the 2D field animation.
+    # Useful as a quick sanity check that the solver and domain are set up correctly.
+    Single_test = False
     if Single_test:
         t0 = time.time()
         res = SimulationRunner.execute(
-            solver_type     = "yee",
-            frame_skip      = 10,
-            finesse         = 30,
-            free_space_sim  = False,
-            grid_refinement = "step",
-            wg_type         = "step",
-            do_hankel       = False,
-            recorders       = ["after", "start", "diag"],
-            label           = r"Yee + AR coating"
+            solver_type="yee",
+            L_wg = 0.1,
+            w_core=0.1,
+            frame_skip=10,
+            finesse=30,
+            free_space_sim=True,
+            do_hankel=True,
+            grid_refinement = False,
+            recorders=["after"],
+            label = r"Yee $\lambda/10$"
         )
         t1 = time.time()
         print(f"YEE executed in {t1-t0:.2f} seconds.")
         SimulationAnalyzer.plot_grid_spacing(res)
         SimulationAnalyzer.plot_eps_r_colormap(res)
-        SimulationAnalyzer.plot_cumulative_energy_flux(res)
         SimulationAnalyzer.plot_2d_animation(res)
-
     
     
     # Sweeps PML thickness (n_pml = 10, 20, 30, 40) and polynomial order (m = 3, 4, 5)
@@ -1439,7 +1407,7 @@ if __name__ == "__main__":
     # Runs the same free-space simulation with both the Yee (FDTD) and FCI (collocated)
     # solvers side-by-side and overlays their recorder time signals for direct comparison.
     # The Hankel reference is enabled to verify numerical dispersion against the analytical solution.
-    FCI_vs_YEE = False
+    FCI_vs_YEE = True
     if FCI_vs_YEE:
         t0 = time.time()
         res_yee = SimulationRunner.execute(
