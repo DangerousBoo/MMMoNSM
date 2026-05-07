@@ -6,53 +6,60 @@ from scipy.fft import fft, fftfreq
 from tqdm import tqdm
 import concurrent.futures
 from functools import partial
-import numba
-
 
 class SimulationConfig:
     """Handles physical constants, geometry, and simulation variables for 1D FDTD."""
     def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-            
+        self.__dict__.update(kwargs)
+        
         # Physical Constants
         self.hbar   = 1.054571817e-34 
         self.m_e    = 9.1093837015e-31 
         self.e      = 1.602176634e-19  
-        self.m_star = getattr(self, "m_star", 0.023 * self.m_e)
+        self.m_star = kwargs.get("m_star", 0.023 * self.m_e)
         
-        # Domain Dimensions (1D target)
-        self.dx         = getattr(self, "dx", 0.5e-9)
-        self.L_buffer   = getattr(self, "L_buffer", 200e-9)
-        self.L_absorb   = getattr(self, "L_absorb", 50e-9)
-        self.L_barrier1 = getattr(self, "L_barrier1", 5e-9)
-        self.L_well     = getattr(self, "L_well", 15e-9)
-        self.L_barrier2 = getattr(self, "L_barrier2", 5e-9)
-        self.L_total    = (self.L_absorb + self.L_buffer + self.L_barrier1 + self.L_well 
-                        + self.L_barrier2 + self.L_buffer + self.L_absorb)
-
+        # Domain Dimensions
+        self.dx         = kwargs.get("dx", 0.5e-9)
+        self.L_barriers = np.asarray(kwargs.get("L_barriers", [10e-9, 10e-9]))
+        self.L_wells    = np.asarray(kwargs.get("L_wells", [30e-9]))
+        self.L_buffer   = kwargs.get("L_buffer", 200e-9)
+        self.L_absorb   = kwargs.get("L_absorb", 50e-9)
+        self.L_total = (2 * self.L_absorb + 2 * self.L_buffer + 
+                        np.sum(self.L_barriers) + np.sum(self.L_wells))
+        
         self.nx = int(np.ceil(self.L_total / self.dx))
         self.x  = np.linspace(0, self.L_total, self.nx)
         
         # Define layer boundaries
         self.x_abs1 = self.L_absorb
-        self.x_bar1 = self.x_abs1 + self.L_buffer
-        self.x_well = self.x_bar1 + self.L_barrier1
-        self.x_bar2 = self.x_well + self.L_well
-        self.x_buf2 = self.x_bar2 + self.L_barrier2
-        self.x_abs2 = self.x_buf2 + self.L_absorb
         
-        # Indices and nodes
-        def get_idx(length): return int(length / self.dx)
+        # Calculate barrier and well positions
+        current_x = self.x_abs1 + self.L_buffer
+        x_bars, x_wells = [], []
         
-        self.i_abs1 = get_idx(self.L_absorb)
-        self.i_bar1 = self.i_abs1 + get_idx(self.L_buffer)
-        self.i_well = self.i_bar1 + get_idx(self.L_barrier1)
-        self.i_bar2 = self.i_well + get_idx(self.L_well)
-        self.i_buf2 = self.i_bar2 + get_idx(self.L_barrier2)
+        for i in range(len(self.L_barriers)):
+            x_bars.append(current_x)
+            current_x += self.L_barriers[i]
+            
+            # Append well if it exists (handles device setups like 2 barriers, 1 well safely)
+            if i < len(self.L_wells):
+                x_wells.append(current_x)
+                current_x += self.L_wells[i]
+
+        self.x_bars  = np.array(x_bars)
+        self.x_wells = np.array(x_wells)
         
-        self.n_layer = self.i_abs1  # Number of nodes in absorbing layer
-        
+        self.x_buf2 = self.x_bars[-1] + self.L_barriers[-1] if len(self.L_barriers) > 0 else current_x
+        self.x_abs2 = self.x_buf2 + self.L_buffer
+
+
+
+
+        # Indices
+        self.n_layer = np.round(self.x_abs1 / self.dx).astype(int) # Number of nodes in absorbing layer
+        self.i_bars  = np.round(self.x_bars / self.dx).astype(int)
+        self.i_buf2  = np.round(self.x_buf2 / self.dx).astype(int)
+
         # Transversal Energy
         self.Ly = getattr(self, "Ly", 40e-9)
         self.Lz = getattr(self, "Lz", 40e-9)
@@ -61,7 +68,9 @@ class SimulationConfig:
         self.E_trans = (self.hbar**2 / (2 * self.m_star)) * ((np.pi * self.n_y / self.Ly)**2 + (np.pi * self.n_z / self.Lz)**2)
         
         # Energy and Potentials
-        self.V0 = getattr(self, "V0", 0.6) * self.e # Evaluate V0 kwarg input as eV
+        self.V0 = np.atleast_1d(np.asarray(getattr(self, "V0", 0.6), dtype=float))* self.e # Evaluate V0 kwarg input as eV
+        n_repeats = int(np.ceil(len(self.L_barriers) / self.V0.size))
+        self.V0_barriers = np.tile(self.V0, n_repeats)[:len(self.L_barriers)]
         self.V_DC = getattr(self, "V_DC", 0.4 ) # Bias voltage
         
         # Initialize Potentials
@@ -94,32 +103,30 @@ class SimulationConfig:
         self.k_x       = np.sqrt(2 * self.m_star * self.E_target) / self.hbar  # Always real & positive
 
     def _build_potentials(self):
-        self.U_R[self.i_bar1:self.i_well] = self.V0 # InP Barrier 1
-        self.U_R[self.i_bar2:self.i_buf2] = self.V0 # InP Barrier 2
-        # # Als je de lijntjes hierboven gebruikt krijg je pure poep (alles shifted)
-        # def compute_potential(x_start, x_end, V_0):
-        #     left_edge = np.maximum(self.x - self.dx/2, x_start)
-        #     right_edge = np.minimum(self.x + self.dx/2, x_end)
-        #     overlap = np.maximum(0, right_edge - left_edge)
-        #     return (overlap / self.dx) * V_0
+        def add_barrier_potential(x_start, x_end, V_0):
+            i_start = int(np.round(x_start / self.dx))
+            i_end = int(np.round(x_end / self.dx))
+            self.U_R[i_start:i_end] += V_0
 
-        # self.U_R += compute_potential(self.x_bar1, self.x_well, self.V0)
-        # self.U_R += compute_potential(self.x_bar2, self.x_buf2, self.V0)
+        # Make the barriers
+        for i in range(len(self.L_barriers)):
+            add_barrier_potential(self.x_bars[i], self.x_bars[i] + self.L_barriers[i], self.V0_barriers[i])
 
         if self.V_DC != 0:
-            # Positive V_DC should LOWER the potential energy on the left.
-            bias_energy = -self.e * self.V_DC 
-            # constant offset on left side (as usual with with diodes)
-            self.U_R[:self.i_bar1] += bias_energy
-            x_dev   = self.x[self.i_bar1:self.i_buf2]
-            tilt    = bias_energy * (1.0 - (x_dev - self.x_bar1) / (self.x_buf2 - self.x_bar1))
-            self.U_R[self.i_bar1:self.i_buf2] += tilt
+            # U = q·V = (-e)·V_DC; right contact is ground (V=0), left contact at V_DC
+            bias = -self.e * self.V_DC
+            self.U_R[:self.i_bars[0]] += bias
+            
+            # Device region: linear tilt from V_DC (left) to 0 (right/ground)
+            x_dev = self.x[self.i_bars[0]:self.i_buf2]
+            tilt = bias * (1.0 - (x_dev - self.x_bars[0]) / (self.x_buf2 - self.x_bars[0]))
+            self.U_R[self.i_bars[0]:self.i_buf2] += tilt
             
         i_arr = np.arange(self.n_layer)
         dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
-        abs_V = self.V0 if self.V0 != 0 else 0.2 * self.e   
-        self.U_I[:self.n_layer] = 1.0 * abs_V * dist_factor
-        self.U_I[-self.n_layer:] = 1.0 * abs_V * dist_factor[::-1]
+        abs_V = np.max(self.V0_barriers) if np.any(self.V0_barriers != 0) else 0.2 * self.e
+        self.U_I[:self.n_layer] = 2.0 * abs_V * dist_factor
+        self.U_I[-self.n_layer:] = 2.0 * abs_V * dist_factor[::-1]
 
 class SchrodingerSolver:
     def __init__(self, cfg):
@@ -162,8 +169,7 @@ class TransmissionAnalyzer:
     @staticmethod
     def get_analytical_T(E_eV_arr, cfg):
         E = E_eV_arr * cfg.e
-        k_f = np.sqrt(2 * cfg.m_star * (E - cfg.E_trans) + 0j) / cfg.hbar
-        k_b = np.sqrt(2 * cfg.m_star * (E - (cfg.V0 + cfg.E_trans)) + 0j) / cfg.hbar
+        k_f = np.sqrt(2 * cfg.m_star * (E - cfg.E_trans) + 0j) / cfg.hbar # k in free space
         
         N = len(E_eV_arr)
         
@@ -181,16 +187,17 @@ class TransmissionAnalyzer:
             M[:, 0, 0] = np.exp(-1j * k * d)
             M[:, 1, 1] = np.exp(1j * k * d)
             return M
-            
-        M1 = intf(k_f, k_b)
-        M2 = prop(k_b, cfg.L_barrier1)
-        M3 = intf(k_b, k_f)
-        M4 = prop(k_f, cfg.L_well)
-        M5 = intf(k_f, k_b)
-        M6 = prop(k_b, cfg.L_barrier2)
-        M7 = intf(k_b, k_f)
         
-        M = M1 @ M2 @ M3 @ M4 @ M5 @ M6 @ M7
+        M = np.eye(2, dtype=np.complex128)[None, :, :].repeat(N, axis=0)
+        
+        for i in range(len(cfg.L_barriers)):
+            k_b_i = np.sqrt(2 * cfg.m_star * (E - (cfg.V0_barriers[i] + cfg.E_trans)) + 0j) / cfg.hbar
+            M = M @ intf(k_f, k_b_i)
+            M = M @ prop(k_b_i, cfg.L_barriers[i])
+            M = M @ intf(k_b_i, k_f)
+            if i < len(cfg.L_wells):
+                M = M @ prop(k_f, cfg.L_wells[i])
+            
         return 1.0 / np.abs(M[:, 0, 0])**2
 
     @staticmethod
@@ -306,10 +313,10 @@ class SimulationRunner:
         ax2.tick_params(axis='y', labelcolor='red')
         
         y_min = min(-0.1, np.min(U_R_eV) * 1.2)
-        y_max = max(cfg.V0/cfg.e, np.max(U_R_eV)) * 1.5
+        y_max = max(np.max(cfg.V0) / cfg.e, np.max(U_R_eV)) * 1.5
         ax2.set_ylim(y_min, y_max)
         
-        ax2.axvspan(cfg.x_bar1*1e9, cfg.x_buf2*1e9, color='gray', alpha=0.1, label='Double Barrier')
+        ax2.axvspan(cfg.x_bars[0]*1e9, cfg.x_buf2*1e9, color='gray', alpha=0.1, label='Device Region')
         
         # Unify legends
         lines_1, labels_1 = ax1.get_legend_handles_labels()
@@ -435,32 +442,62 @@ if __name__ == '__main__':
     # === RUN EXPERIMENT ===
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
-    # # 1. Single Voltage Spectrum
-    results_barrier = SimulationRunner.execute(
-        n_y = 1, 
-        n_z = 1, 
-        V0 = 0.6, 
-        V_DC = -0.5, 
-        T_total = 1000.0e-15, 
-        E_target = 0.3, 
-        frame_skip = 500)
-    results_free = SimulationRunner.execute(
-        n_y = 1, 
-        n_z = 1, 
-        V0 = 0.0, 
-        V_DC = 0.0, 
-        T_total = 1000.0e-15, 
-        E_target = 0.3, 
-        frame_skip = 500, 
-        dt = results_barrier["config"].dt)
-    TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    SimulationRunner.plot_animation(results_barrier)
+    # # 1. Single Voltage Spectrum (Uncomment to view)
+    Double_barrier = True
+    if Double_barrier:
+        results_barrier = SimulationRunner.execute(n_y=1, 
+        n_z=1, 
+        V0=0.6, 
+        V_DC=-0.0, 
+        T_total=1000.0e-15, 
+        E_target=0.35, 
+        frame_skip=500)
+
+        results_free = SimulationRunner.execute(n_y=1, 
+        n_z=1, 
+        V0=0.0, 
+        V_DC=0.0, 
+        T_total=1000.0e-15, 
+        E_target=0.35, 
+        frame_skip=500, 
+        dt=results_barrier["config"].dt)
+        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+        SimulationRunner.plot_animation(results_barrier)
     
-    # 2. Extract I-V Curve showing Negative Differential Resistance
-    # voltages = np.linspace(0.07, 0.12, 50)
-    # base_sim_kwargs = {
-    #     "V0": 0.6, "T_total": 5000.0e-15, 
-    #     "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-    #     "frame_skip": 1000 # Only doing integration, not viewing animation
-    # }
-    # IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    
+    Three_barriers = True
+    if Three_barriers:
+        results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
+        L_wells = [15e-9, 15e-9], 
+        n_y=1, 
+        n_z=1, 
+        V0=0.6, 
+        V_DC=0.0, 
+        T_total=5000.0e-15, 
+        E_target=0.35, 
+        frame_skip=500)
+
+        results_free = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
+        L_wells = [15e-9, 15e-9], 
+        n_y=1, 
+        n_z=1, 
+        V0=0.0, 
+        V_DC=0.0, 
+        T_total=5000.0e-15, 
+        E_target=0.35, 
+        frame_skip=500, 
+        dt=results_barrier["config"].dt)
+        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+        SimulationRunner.plot_animation(results_barrier)
+    
+    # # 2. Extract I-V Curve showing Negative Differential Resistance
+    # # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    # do_IV_curve = False
+    # if do_IV_curve:
+    #     voltages = np.linspace(0, 0.05, 50)
+    #     base_sim_kwargs = {
+    #         "V0": 0.6, "T_total": 10000.0e-15, 
+    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+    #         "frame_skip": 1000 # Only doing integration, not viewing animation
+    #     }
+    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
