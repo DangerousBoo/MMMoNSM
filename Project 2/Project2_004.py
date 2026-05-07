@@ -40,20 +40,14 @@ class SimulationConfig:
         for i in range(len(self.L_barriers)):
             x_bars.append(current_x)
             current_x += self.L_barriers[i]
-            
-            # Append well if it exists (handles device setups like 2 barriers, 1 well safely)
             if i < len(self.L_wells):
                 x_wells.append(current_x)
                 current_x += self.L_wells[i]
 
         self.x_bars  = np.array(x_bars)
         self.x_wells = np.array(x_wells)
-        
         self.x_buf2 = self.x_bars[-1] + self.L_barriers[-1] if len(self.L_barriers) > 0 else current_x
         self.x_abs2 = self.x_buf2 + self.L_buffer
-
-
-
 
         # Indices
         self.n_layer = np.round(self.x_abs1 / self.dx).astype(int) # Number of nodes in absorbing layer
@@ -231,7 +225,6 @@ class TransmissionAnalyzer:
         plt.figure(figsize=(8, 4))
         plt.plot(E_eV_plot, T, 'm-', lw=2, label="FDTD Simulation")
         
-        # Unconditionally overlay analytical curve for comparison
         T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
         plt.plot(E_eV_plot, T_analy, 'k--', lw=1.5, label="Analytical (V_DC=0)")
         
@@ -449,16 +442,16 @@ if __name__ == '__main__':
         n_z=1, 
         V0=0.6, 
         V_DC=-0.0, 
-        T_total=1000.0e-15, 
-        E_target=0.35, 
+        T_total=10000.0e-15, 
+        E_target=0.5, 
         frame_skip=500)
 
         results_free = SimulationRunner.execute(n_y=1, 
         n_z=1, 
         V0=0.0, 
         V_DC=0.0, 
-        T_total=1000.0e-15, 
-        E_target=0.35, 
+        T_total=10000.0e-15, 
+        E_target=0.5, 
         frame_skip=500, 
         dt=results_barrier["config"].dt)
         TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
