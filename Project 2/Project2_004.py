@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from scipy.fft import fft, fftfreq
+from scipy.optimize import brentq
 from tqdm import tqdm
 import concurrent.futures
 from functools import partial
@@ -161,6 +162,88 @@ class SchrodingerSolver:
 class TransmissionAnalyzer:
     """Computes and plots both numerical FDTD and analytical TMM transmission spectra."""
     @staticmethod
+    def _finite_well_levels(cfg, E_low_eV, E_high_eV):
+        """Approximate quasi-bound levels with a finite square-well model."""
+        if len(cfg.L_wells) == 0 or len(cfg.L_barriers) < 2:
+            return np.array([], dtype=float)
+
+        levels_eV = []
+        eps = 1e-12
+
+        for j, Lw in enumerate(cfg.L_wells):
+            if j >= len(cfg.x_wells) or (j + 1) >= len(cfg.L_barriers):
+                continue
+
+            i_w0 = int(np.round(cfg.x_wells[j] / cfg.dx))
+            i_w1 = int(np.round((cfg.x_wells[j] + Lw) / cfg.dx))
+            if i_w1 <= i_w0 + 2:
+                continue
+
+            i_bl0 = int(np.round(cfg.x_bars[j] / cfg.dx))
+            i_bl1 = int(np.round((cfg.x_bars[j] + cfg.L_barriers[j]) / cfg.dx))
+            i_br0 = int(np.round(cfg.x_bars[j + 1] / cfg.dx))
+            i_br1 = int(np.round((cfg.x_bars[j + 1] + cfg.L_barriers[j + 1]) / cfg.dx))
+
+            U_w = float(np.mean(cfg.U_R[i_w0:i_w1]))
+            U_bl = float(np.max(cfg.U_R[i_bl0:i_bl1]))
+            U_br = float(np.max(cfg.U_R[i_br0:i_br1]))
+
+            # Use the smaller neighboring barrier as effective confinement depth.
+            V_eff = min(U_bl, U_br) - U_w
+            if V_eff <= 0:
+                continue
+
+            z0 = 0.5 * Lw * np.sqrt(2.0 * cfg.m_star * V_eff) / cfg.hbar
+            if z0 <= 0:
+                continue
+
+            def f_even(z):
+                return z * np.tan(z) - np.sqrt(max(z0 * z0 - z * z, 0.0))
+
+            def f_odd(z):
+                return -z / np.tan(z) - np.sqrt(max(z0 * z0 - z * z, 0.0))
+
+            n_max = int(np.floor(2.0 * z0 / np.pi)) + 2
+            for n in range(n_max):
+                a = n * np.pi / 2.0 + eps
+                b = (n + 1) * np.pi / 2.0 - eps
+                if a >= z0:
+                    break
+                b = min(b, z0 - eps)
+                if b <= a:
+                    continue
+
+                f = f_even if (n % 2 == 0) else f_odd
+                try:
+                    fa, fb = f(a), f(b)
+                    if np.isnan(fa) or np.isnan(fb) or np.isinf(fa) or np.isinf(fb):
+                        continue
+                    if fa * fb > 0:
+                        continue
+                    z = brentq(f, a, b, maxiter=200)
+                except Exception:
+                    continue
+
+                E_rel = (2.0 * cfg.hbar * cfg.hbar * z * z) / (cfg.m_star * Lw * Lw)
+                E_abs_eV = (U_w + E_rel) / cfg.e
+                if E_low_eV <= E_abs_eV <= E_high_eV:
+                    levels_eV.append(E_abs_eV)
+
+        if not levels_eV:
+            return np.array([], dtype=float)
+
+        levels = np.array(levels_eV, dtype=float)
+        levels.sort()
+
+        dedup = [levels[0]]
+        tol = 5e-4  # eV
+        for val in levels[1:]:
+            if abs(val - dedup[-1]) > tol:
+                dedup.append(val)
+
+        return np.array(dedup, dtype=float)
+
+    @staticmethod
     def get_analytical_T(E_eV_arr, cfg):
         E = E_eV_arr * cfg.e
         k_f = np.sqrt(2 * cfg.m_star * (E - cfg.E_trans) + 0j) / cfg.hbar # k in free space
@@ -217,9 +300,9 @@ class TransmissionAnalyzer:
         
         valid_E = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_eV_plot = E_eV[valid_E]
-        
+
         k_bar = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
-        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))  
+        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
         T = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
         
         plt.figure(figsize=(8, 4))
@@ -235,8 +318,16 @@ class TransmissionAnalyzer:
         
         E_min = E_center_eV - 3 * sigma_E_eV
         E_max = E_center_eV + 3 * sigma_E_eV
+        finite_well_res = TransmissionAnalyzer._finite_well_levels(cfg, 0, E_eV_plot.max())
+
         plt.axvline(E_min, color='r', linestyle='--', alpha=0.6, label=r'$\pm 3\sigma_E$ width')
         plt.axvline(E_max, color='r', linestyle='--', alpha=0.6)
+        for V_barrier in cfg.V0_barriers / cfg.e:
+            plt.axvline(V_barrier, color='g', linestyle=':', alpha=0.7)
+        plt.plot([], [], color='g', linestyle=':', alpha=0.7, label='Barrier Heights (eV)')
+        for res in finite_well_res:
+            plt.axvline(res, color='b', linestyle='-.', alpha=0.7)
+        plt.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels (eV)')
         
         plt.xlim(E_min, E_max)
         plt.ylim(0, 1.1)
@@ -435,6 +526,7 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
+<<<<<<< HEAD
     # Double_barrier = True
     # if Double_barrier:
     #     results_barrier = SimulationRunner.execute(n_y=1, 
@@ -490,6 +582,75 @@ if __name__ == '__main__':
         base_sim_kwargs = {
             "V0": 0.6, "T_total": 10000.0e-15, 
             "E_target": 0.022346, # Centered near Fermi level (mu_L) to maximize resolution
+=======
+    Double_barrier = False
+    if Double_barrier:
+        results_barrier = SimulationRunner.execute(n_y=1, 
+        n_z=1, 
+        V0=0.6, 
+        V_DC=-0.0, 
+        T_total=1000.0e-15, 
+        E_target=0.5, 
+        frame_skip=500)
+
+        results_free = SimulationRunner.execute(n_y=1, 
+        n_z=1, 
+        V0=0.0, 
+        V_DC=0.0, 
+        T_total=1000.0e-15, 
+        E_target=0.5, 
+        frame_skip=500, 
+        dt=results_barrier["config"].dt)
+        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+        SimulationRunner.plot_animation(results_barrier)
+    
+    
+    Three_barriers = False
+    if Three_barriers:
+        results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
+        L_wells = [10e-9, 20e-9], 
+        n_y=1, 
+        n_z=1, 
+        V0=[0.6], 
+        V_DC=0.0, 
+        T_total=5000.0e-15, 
+        E_target=0.35, 
+        frame_skip=100)
+
+        results_free = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
+        L_wells = [10e-9, 20e-9], 
+        n_y=1, 
+        n_z=1, 
+        V0=0.0, 
+        V_DC=0.0, 
+        T_total=5000.0e-15, 
+        E_target=0.35, 
+        frame_skip=100, 
+        dt=results_barrier["config"].dt)
+        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+        SimulationRunner.plot_animation(results_barrier)
+    
+    # 2. Extract I-V Curve showing Negative Differential Resistance
+    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    do_IV_curve = False
+    if do_IV_curve:
+        voltages = np.linspace(0, 0.05, 50)
+        base_sim_kwargs = {
+            "V0": 0.6, "T_total": 10000.0e-15, 
+            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+            "frame_skip": 1000 # Only doing integration, not viewing animation
+        }
+        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+        
+    do_IV_curve_3b = True
+    if do_IV_curve_3b:
+        voltages = np.linspace(0, 5, 50)
+        base_sim_kwargs = {
+            "V0": 0.6, "T_total": 10000.0e-15, 
+            "L_barriers": [5e-9, 10e-9, 5e-9],
+            "L_wells": [10e-9, 20e-9],
+            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+>>>>>>> 29a24c08b65733fdc493d7edaf3926951ff989dc
             "frame_skip": 1000 # Only doing integration, not viewing animation
         }
         IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
