@@ -1381,13 +1381,13 @@ if __name__ == "__main__":
     # Runs a single Yee simulation in free-space (no waveguide core) and plots
     # the grid spacing, the permittivity colormap, and the 2D field animation.
     # Useful as a quick sanity check that the solver and domain are set up correctly.
-    Single_test = False
+    Single_test = True
     if Single_test:
         t0 = time.time()
         res = SimulationRunner.execute(
             solver_type     = "yee",
             frame_skip      = 10,
-            finesse         = 30,
+            finesse         = 20,
             free_space_sim  = False,
             grid_refinement = "step",
             wg_type         = "step",
