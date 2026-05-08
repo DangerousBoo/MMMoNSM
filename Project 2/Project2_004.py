@@ -526,63 +526,6 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
-<<<<<<< HEAD
-    # Double_barrier = True
-    # if Double_barrier:
-    #     results_barrier = SimulationRunner.execute(n_y=1, 
-    #     n_z=1, 
-    #     V0=0.6, 
-    #     V_DC=-0.0, 
-    #     T_total=10000.0e-15, 
-    #     E_target=0.5, 
-    #     frame_skip=500)
-
-    #     results_free = SimulationRunner.execute(n_y=1, 
-    #     n_z=1, 
-    #     V0=0.0, 
-    #     V_DC=0.0, 
-    #     T_total=10000.0e-15, 
-    #     E_target=0.5, 
-    #     frame_skip=500, 
-    #     dt=results_barrier["config"].dt)
-    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    #     SimulationRunner.plot_animation(results_barrier)
-    
-    
-    # Three_barriers = True
-    # if Three_barriers:
-    #     results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
-    #     L_wells = [15e-9, 15e-9], 
-    #     n_y=1, 
-    #     n_z=1, 
-    #     V0=0.6, 
-    #     V_DC=0.0, 
-    #     T_total=5000.0e-15, 
-    #     E_target=0.35, 
-    #     frame_skip=500)
-
-    #     results_free = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
-    #     L_wells = [15e-9, 15e-9], 
-    #     n_y=1, 
-    #     n_z=1, 
-    #     V0=0.0, 
-    #     V_DC=0.0, 
-    #     T_total=5000.0e-15, 
-    #     E_target=0.35, 
-    #     frame_skip=500, 
-    #     dt=results_barrier["config"].dt)
-    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    #     SimulationRunner.plot_animation(results_barrier)
-    
-    # 2. Extract I-V Curve showing Negative Differential Resistance
-    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    do_IV_curve = True
-    if do_IV_curve:
-        voltages = np.linspace(0.1, 0.15, 75)
-        base_sim_kwargs = {
-            "V0": 0.6, "T_total": 10000.0e-15, 
-            "E_target": 0.022346, # Centered near Fermi level (mu_L) to maximize resolution
-=======
     Double_barrier = False
     if Double_barrier:
         results_barrier = SimulationRunner.execute(n_y=1, 
@@ -650,7 +593,6 @@ if __name__ == '__main__':
             "L_barriers": [5e-9, 10e-9, 5e-9],
             "L_wells": [10e-9, 20e-9],
             "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
->>>>>>> 29a24c08b65733fdc493d7edaf3926951ff989dc
             "frame_skip": 1000 # Only doing integration, not viewing animation
         }
         IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
