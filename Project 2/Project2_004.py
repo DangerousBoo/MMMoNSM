@@ -130,7 +130,7 @@ class SchrodingerSolver:
         denom = (1 + 0.5 * cfg.dt * cfg.U_I / cfg.hbar)
         self.c_A = (1 - 0.5 * cfg.dt * cfg.U_I / cfg.hbar) / denom
         self.c_B = (cfg.dt / cfg.hbar) / denom
-        self.lap_factor = (cfg.hbar * cfg.dt) / (2 * cfg.m_star * cfg.dx**2) / denom
+        self.c_lap = (cfg.hbar * cfg.dt) / (2 * cfg.m_star * cfg.dx**2) / denom
         
         env = (2 * np.pi * cfg.sigma_x**2)**(-0.25) * np.exp(- (cfg.x - cfg.x_0)**2 / (4 * cfg.sigma_x**2))
         phase = cfg.k_x * cfg.x
@@ -151,8 +151,8 @@ class SchrodingerSolver:
         return lap
 
     def step(self):
-        self.psi_R = (self.c_A * self.psi_R - self.lap_factor * self._lap(self.psi_I) + self.c_B * (self.cfg.U_R) * self.psi_I)
-        self.psi_I = (self.c_A * self.psi_I + self.lap_factor * self._lap(self.psi_R) - self.c_B * (self.cfg.U_R) * self.psi_R)
+        self.psi_R = (self.c_A * self.psi_R - self.c_lap * self._lap(self.psi_I) + self.c_B * (self.cfg.U_R) * self.psi_I)
+        self.psi_I = (self.c_A * self.psi_I + self.c_lap * self._lap(self.psi_R) - self.c_B * (self.cfg.U_R) * self.psi_R)
 
     @property
     def density(self):
@@ -181,7 +181,7 @@ class TransmissionAnalyzer:
             M[:, 0, 0] = np.exp(-1j * k * d)
             M[:, 1, 1] = np.exp(1j * k * d)
             return M
-        
+    
         M = np.eye(2, dtype=np.complex128)[None, :, :].repeat(N, axis=0)
         
         for i in range(len(cfg.L_barriers)):
@@ -258,12 +258,12 @@ class SimulationRunner:
         history = np.zeros((n_frames, cfg.nx), dtype=np.float32) if record_history else None
         record_ix = record_ix or int(cfg.x_buf2 / cfg.dx) + int(20e-9 / cfg.dx)
             
-        sig_R, sig_I = np.zeros(cfg.nt), np.zeros(cfg.nt)
+        rec_R, rec_I = np.zeros(cfg.nt), np.zeros(cfg.nt)
         frame_idx = 0
         
         for it in tqdm(range(cfg.nt), desc=f"Simulating (nt={cfg.nt})", disable=disable_tqdm):
             solver.step()
-            sig_R[it], sig_I[it] = solver.psi_R[record_ix], solver.psi_I[record_ix]
+            rec_R[it], rec_I[it] = solver.psi_R[record_ix], solver.psi_I[record_ix]
             
             if record_history and not it % frame_skip and frame_idx < n_frames:
                 history[frame_idx] = solver.density
@@ -274,8 +274,8 @@ class SimulationRunner:
             "history": history,
             "frame_skip": frame_skip,
             "record_ix": record_ix,
-            "time_signal_R": sig_R,
-            "time_signal_I": sig_I
+            "time_signal_R": rec_R,
+            "time_signal_I": rec_I
         }
         
     @staticmethod
@@ -344,15 +344,29 @@ class IVCharacteristic:
         
         cfg_1d_kwargs = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V}
         
+        # Initialize a dummy config to grab the globally safe dt for all runs
+        cfg_dummy = SimulationConfig(**base_kwargs, n_y=0, n_z=0, V_DC=max(V_dc_arr))
+        safe_dt = cfg_dummy.dt
+        base_kwargs["dt"] = safe_dt # one dt value for all simulations
+        
+        # Run free space exactly ONCE (before i did this every bias voltage lmao)
+        res_f = SimulationRunner.execute(**{**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": 0.0, "V0": 0.0}, disable_tqdm=True, record_history=False)
+        psi_free_R, psi_free_I = res_f["time_signal_R"] , res_f["time_signal_I"]
+        
+        j_x_free = (cfg_dummy.e * cfg_dummy.hbar / cfg_dummy.m_star) * (psi_free_R * np.gradient(psi_free_I, cfg_dummy.dx) - psi_free_I * np.gradient(psi_free_R, cfg_dummy.dx))
+        N_pad = res_f["config"].nt * 16
+        fft_free = fft(j_x_free, n=N_pad)
+        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
         # We ONLY run the barrier simulation here. Free space is already done!
         res_b = SimulationRunner.execute(**cfg_1d_kwargs, disable_tqdm=True, record_history=False)
         
         cfg = res_b["config"]
-        psi_bar = res_b["time_signal_R"] + 1j * res_b["time_signal_I"]
-        
+        psi_bar_R, psi_bar_I = res_b["time_signal_R"] , res_b["time_signal_I"]
+        j_x_bar = (e * cfg.hbar / cfg.m_star) * (psi_bar_R * np.gradient(psi_bar_I, cfg.dx) - psi_bar_I * np.gradient(psi_bar_R, cfg.dx))
+
         # Use 16x padding for incredibly smooth energy resolution to catch the sharp peak
         N_pad = cfg.nt * 16
-        fft_bar = fft(psi_bar, n=N_pad)
+        fft_bar = fft(j_x_bar, n=N_pad)
         freqs = fftfreq(N_pad, cfg.dt)
         
         E_total_J = -(2 * np.pi * cfg.hbar * freqs)
@@ -367,10 +381,7 @@ class IVCharacteristic:
         valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_J = E_J[valid]
                 
-        k_bar = np.sqrt(2 * cfg.m_star * (E_J - U_obs_bar))
-        k_free = np.sqrt(2 * cfg.m_star * (E_J - U_obs_free))
-                
-        T_E = (k_bar / k_free) * (np.abs(Psi_b[valid])**2 / np.abs(Psi_f[valid])**2)
+        T_E = np.abs(Psi_b[valid])**2 / np.abs(Psi_f[valid])**2
         
         # Sort to ensure np.trapezoid integrates forward
         sort_idx = np.argsort(E_J)
@@ -400,24 +411,11 @@ class IVCharacteristic:
 
     @staticmethod
     def plot_IV(V_dc_arr, base_kwargs):
-        print("Pre-computing Free-Space Transmission Reference...")
         
-        # Initialize a dummy config to grab the globally safe dt for all runs
-        cfg_dummy = SimulationConfig(**base_kwargs, n_y=0, n_z=0, V_DC=max(V_dc_arr))
-        safe_dt = cfg_dummy.dt
-        base_kwargs["dt"] = safe_dt # one dt value for all simulations
-        
-        # Run free space exactly ONCE (before i did this every bias voltage lmao)
-        res_f = SimulationRunner.execute(**{**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": 0.0, "V0": 0.0}, disable_tqdm=True, record_history=False)
-        psi_free = res_f["time_signal_R"] + 1j * res_f["time_signal_I"]
-        
-        N_pad = res_f["config"].nt * 16
-        fft_free = fft(psi_free, n=N_pad)
-        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
         
         print(f"Executing {len(V_dc_arr)} barrier biases with optimized Landauer factorization...")
 
-        func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs, fft_free=fft_free, U_obs_free=U_obs_free)
+        func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs)
         
         with concurrent.futures.ProcessPoolExecutor() as executor:
             currents = list(tqdm(executor.map(func, V_dc_arr), total=len(V_dc_arr), desc="Extracting IV Curve"))
@@ -436,7 +434,7 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
-    Double_barrier = True
+    Double_barrier = False
     if Double_barrier:
         results_barrier = SimulationRunner.execute(n_y=1, 
         n_z=1, 
@@ -458,7 +456,7 @@ if __name__ == '__main__':
         SimulationRunner.plot_animation(results_barrier)
     
     
-    Three_barriers = True
+    Three_barriers = False
     if Three_barriers:
         results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
         L_wells = [15e-9, 15e-9], 
@@ -483,14 +481,14 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
         SimulationRunner.plot_animation(results_barrier)
     
-    # # 2. Extract I-V Curve showing Negative Differential Resistance
-    # # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    # do_IV_curve = False
-    # if do_IV_curve:
-    #     voltages = np.linspace(0, 0.05, 50)
-    #     base_sim_kwargs = {
-    #         "V0": 0.6, "T_total": 10000.0e-15, 
-    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-    #         "frame_skip": 1000 # Only doing integration, not viewing animation
-    #     }
-    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    # 2. Extract I-V Curve showing Negative Differential Resistance
+    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    do_IV_curve = True
+    if do_IV_curve:
+        voltages = np.linspace(0, 0.1, 200)
+        base_sim_kwargs = {
+            "V0": 0.6, "T_total": 10000.0e-15, 
+            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+            "frame_skip": 1000 # Only doing integration, not viewing animation
+        }
+        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
