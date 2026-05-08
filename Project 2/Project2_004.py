@@ -246,8 +246,7 @@ class TransmissionAnalyzer:
         plt.legend()
         plt.grid(True)
         plt.show()
-
-        
+       
 class SimulationRunner:
     @staticmethod
     def execute(frame_skip=100, record_ix=None, disable_tqdm=False, record_history=True, **kwargs):
@@ -334,25 +333,32 @@ class SimulationRunner:
 
 class IVCharacteristic:
     @staticmethod
-    def _run_bias(V, base_kwargs, fft_free, U_obs_free):
+    def _run_bias(V, base_kwargs): # Removed the pre-computed fft_free and U_obs_free
         e = 1.602176634e-19
         h = 6.62607015e-34
         k_B = 1.380649e-23
-        Temp = 4.0 # 4K for sharp Fermi edge
+        Temp = 277.0 # 4K for sharp Fermi edge
         mu_L = 22.436e-3 * e 
         mu_R = mu_L - e * V
         
-        cfg_1d_kwargs = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V}
+        # 1. Run the barrier simulation for this specific bias
+        cfg_barrier = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V}
+        res_b = SimulationRunner.execute(**cfg_barrier, disable_tqdm=True, record_history=False)
         
-        # We ONLY run the barrier simulation here. Free space is already done!
-        res_b = SimulationRunner.execute(**cfg_1d_kwargs, disable_tqdm=True, record_history=False)
+        # 2. Run the free space simulation for the EXACT SAME bias (V0=0.0 removes barriers)
+        cfg_free = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V, "V0": 0.0}
+        res_f = SimulationRunner.execute(**cfg_free, disable_tqdm=True, record_history=False)
         
         cfg = res_b["config"]
-        psi_bar = res_b["time_signal_R"] + 1j * res_b["time_signal_I"]
         
-        # Use 16x padding for incredibly smooth energy resolution to catch the sharp peak
+        # Extract signals for both
+        psi_bar = res_b["time_signal_R"] + 1j * res_b["time_signal_I"]
+        psi_free = res_f["time_signal_R"] + 1j * res_f["time_signal_I"]
+        
+        # Use 16x padding for incredibly smooth energy resolution
         N_pad = cfg.nt * 16
         fft_bar = fft(psi_bar, n=N_pad)
+        fft_free = fft(psi_free, n=N_pad)
         freqs = fftfreq(N_pad, cfg.dt)
         
         E_total_J = -(2 * np.pi * cfg.hbar * freqs)
@@ -363,6 +369,7 @@ class IVCharacteristic:
         Psi_f = fft_free[pos_mask]
                 
         U_obs_bar = cfg.U_R[res_b["record_ix"]]
+        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
                 
         valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_J = E_J[valid]
@@ -370,6 +377,7 @@ class IVCharacteristic:
         k_bar = np.sqrt(2 * cfg.m_star * (E_J - U_obs_bar))
         k_free = np.sqrt(2 * cfg.m_star * (E_J - U_obs_free))
                 
+        # Calculate transmission perfectly aligned in energy
         T_E = (k_bar / k_free) * (np.abs(Psi_b[valid])**2 / np.abs(Psi_f[valid])**2)
         
         # Sort to ensure np.trapezoid integrates forward
@@ -383,8 +391,8 @@ class IVCharacteristic:
         def fermi(E, mu):
             return 1.0 / (np.exp(np.clip((E - mu)/(k_B * Temp), -100, 100)) + 1.0)
 
-        for ny in range(1,6):
-            for nz in range(1,6):
+        for ny in range(1,15):
+            for nz in range(1,15):
                 E_trans = (cfg_base.hbar**2 / (2 * cfg_base.m_star)) * ((np.pi * ny / cfg_base.Ly)**2 + (np.pi * nz / cfg_base.Lz)**2)
                 if E_trans > mu_L + 6 * k_B * Temp:
                     continue
@@ -400,30 +408,21 @@ class IVCharacteristic:
 
     @staticmethod
     def plot_IV(V_dc_arr, base_kwargs):
-        print("Pre-computing Free-Space Transmission Reference...")
-        
         # Initialize a dummy config to grab the globally safe dt for all runs
+        # We need a stable dt so arrays match up during FFTs
         cfg_dummy = SimulationConfig(**base_kwargs, n_y=0, n_z=0, V_DC=max(V_dc_arr))
         safe_dt = cfg_dummy.dt
-        base_kwargs["dt"] = safe_dt # one dt value for all simulations
+        base_kwargs["dt"] = safe_dt 
         
-        # Run free space exactly ONCE (before i did this every bias voltage lmao)
-        res_f = SimulationRunner.execute(**{**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": 0.0, "V0": 0.0}, disable_tqdm=True, record_history=False)
-        psi_free = res_f["time_signal_R"] + 1j * res_f["time_signal_I"]
-        
-        N_pad = res_f["config"].nt * 16
-        fft_free = fft(psi_free, n=N_pad)
-        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
-        
-        print(f"Executing {len(V_dc_arr)} barrier biases with optimized Landauer factorization...")
+        print(f"Executing {len(V_dc_arr)} biases (Barrier & Free Space) with optimized Landauer factorization...")
 
-        func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs, fft_free=fft_free, U_obs_free=U_obs_free)
+        # We no longer pass pre-computed reference data to the partial function
+        func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs)
         
         with concurrent.futures.ProcessPoolExecutor() as executor:
             currents = list(tqdm(executor.map(func, V_dc_arr), total=len(V_dc_arr), desc="Extracting IV Curve"))
             
         plt.figure(figsize=(8, 5))
-        # Plot in mV and microAmps for easier readability against the paper
         plt.semilogy(V_dc_arr * 1000, np.array(currents) * 1e6, 'r-o', lw=2)
         plt.title("Resonant Tunneling Diode I-V Characteristic")
         plt.xlabel("$V_{DC}$ (mV)")
@@ -436,61 +435,61 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
-    Double_barrier = True
-    if Double_barrier:
-        results_barrier = SimulationRunner.execute(n_y=1, 
-        n_z=1, 
-        V0=0.6, 
-        V_DC=-0.0, 
-        T_total=10000.0e-15, 
-        E_target=0.5, 
-        frame_skip=500)
+    # Double_barrier = True
+    # if Double_barrier:
+    #     results_barrier = SimulationRunner.execute(n_y=1, 
+    #     n_z=1, 
+    #     V0=0.6, 
+    #     V_DC=-0.0, 
+    #     T_total=10000.0e-15, 
+    #     E_target=0.5, 
+    #     frame_skip=500)
 
-        results_free = SimulationRunner.execute(n_y=1, 
-        n_z=1, 
-        V0=0.0, 
-        V_DC=0.0, 
-        T_total=10000.0e-15, 
-        E_target=0.5, 
-        frame_skip=500, 
-        dt=results_barrier["config"].dt)
-        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-        SimulationRunner.plot_animation(results_barrier)
+    #     results_free = SimulationRunner.execute(n_y=1, 
+    #     n_z=1, 
+    #     V0=0.0, 
+    #     V_DC=0.0, 
+    #     T_total=10000.0e-15, 
+    #     E_target=0.5, 
+    #     frame_skip=500, 
+    #     dt=results_barrier["config"].dt)
+    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    #     SimulationRunner.plot_animation(results_barrier)
     
     
-    Three_barriers = True
-    if Three_barriers:
-        results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
-        L_wells = [15e-9, 15e-9], 
-        n_y=1, 
-        n_z=1, 
-        V0=0.6, 
-        V_DC=0.0, 
-        T_total=5000.0e-15, 
-        E_target=0.35, 
-        frame_skip=500)
+    # Three_barriers = True
+    # if Three_barriers:
+    #     results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
+    #     L_wells = [15e-9, 15e-9], 
+    #     n_y=1, 
+    #     n_z=1, 
+    #     V0=0.6, 
+    #     V_DC=0.0, 
+    #     T_total=5000.0e-15, 
+    #     E_target=0.35, 
+    #     frame_skip=500)
 
-        results_free = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
-        L_wells = [15e-9, 15e-9], 
-        n_y=1, 
-        n_z=1, 
-        V0=0.0, 
-        V_DC=0.0, 
-        T_total=5000.0e-15, 
-        E_target=0.35, 
-        frame_skip=500, 
-        dt=results_barrier["config"].dt)
-        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-        SimulationRunner.plot_animation(results_barrier)
+    #     results_free = SimulationRunner.execute(L_barriers = [5e-9, 5e-9, 5e-9],
+    #     L_wells = [15e-9, 15e-9], 
+    #     n_y=1, 
+    #     n_z=1, 
+    #     V0=0.0, 
+    #     V_DC=0.0, 
+    #     T_total=5000.0e-15, 
+    #     E_target=0.35, 
+    #     frame_skip=500, 
+    #     dt=results_barrier["config"].dt)
+    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    #     SimulationRunner.plot_animation(results_barrier)
     
-    # # 2. Extract I-V Curve showing Negative Differential Resistance
-    # # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    # do_IV_curve = False
-    # if do_IV_curve:
-    #     voltages = np.linspace(0, 0.05, 50)
-    #     base_sim_kwargs = {
-    #         "V0": 0.6, "T_total": 10000.0e-15, 
-    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-    #         "frame_skip": 1000 # Only doing integration, not viewing animation
-    #     }
-    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    # 2. Extract I-V Curve showing Negative Differential Resistance
+    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    do_IV_curve = True
+    if do_IV_curve:
+        voltages = np.linspace(0.1, 0.15, 75)
+        base_sim_kwargs = {
+            "V0": 0.6, "T_total": 10000.0e-15, 
+            "E_target": 0.022346, # Centered near Fermi level (mu_L) to maximize resolution
+            "frame_skip": 1000 # Only doing integration, not viewing animation
+        }
+        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
