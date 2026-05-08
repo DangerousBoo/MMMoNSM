@@ -279,46 +279,16 @@ class TransmissionAnalyzer:
 
     @staticmethod
     def plot_transmission(results_barrier, results_free):
-        cfg = results_barrier["config"]
-        psi_t_bar = results_barrier["time_signal_R"] + 1j * results_barrier["time_signal_I"]
-        psi_t_free = results_free["time_signal_R"] + 1j * results_free["time_signal_I"]
-        
-        N_pad = cfg.nt * 8
-        fft_bar = fft(psi_t_bar, n=N_pad)
-        fft_free = fft(psi_t_free, n=N_pad)
-        freqs = fftfreq(N_pad, cfg.dt)
-        E_all = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
-        
-        pos_mask = E_all > 0
-        E_eV = E_all[pos_mask]
-        Psi_bar = fft_bar[pos_mask]
-        Psi_free = fft_free[pos_mask]
-        
-        U_obs_bar = cfg.U_R[results_barrier["record_ix"]]
-        U_obs_free = results_free["config"].U_R[results_free["record_ix"]]
-        E_J = E_eV * cfg.e 
-        
-        valid_E = (E_J > U_obs_bar) & (E_J > U_obs_free)
-        E_eV_plot = E_eV[valid_E]
+        E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV = \
+            TransmissionAnalyzer.compute_T(results_barrier, results_free)
 
-        k_bar = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
-        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
-        T = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
-        
-        plt.figure(figsize=(8, 4))
-        plt.plot(E_eV_plot, T, 'm-', lw=2, label="FDTD Simulation")
-        
-        T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
-        plt.plot(E_eV_plot, T_analy, 'k--', lw=1.5, label="Analytical (V_DC=0)")
-        
-        k_0 = cfg.k_x
-        sigma_k = 1.0 / (2.0 * cfg.sigma_x)
-        sigma_E_eV = ((cfg.hbar**2 * k_0 / cfg.m_star) * sigma_k) / cfg.e
-        E_center_eV = cfg.total_E / cfg.e  # plot window centered on total energy of the packet
-        
         E_min = E_center_eV - 3 * sigma_E_eV
         E_max = E_center_eV + 3 * sigma_E_eV
         finite_well_res = TransmissionAnalyzer._finite_well_levels(cfg, 0, E_eV_plot.max())
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(E_eV_plot, T, 'm-', lw=2, label="FDTD Simulation")
+        plt.plot(E_eV_plot, T_analy, 'k--', lw=1.5, label="Analytical (V_DC=0)")
 
         plt.axvline(E_min, color='r', linestyle='--', alpha=0.6, label=r'$\pm 3\sigma_E$ width')
         plt.axvline(E_max, color='r', linestyle='--', alpha=0.6)
@@ -328,7 +298,7 @@ class TransmissionAnalyzer:
         for res in finite_well_res:
             plt.axvline(res, color='b', linestyle='-.', alpha=0.7)
         plt.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels (eV)')
-        
+
         plt.xlim(E_min, E_max)
         plt.ylim(0, 1.1)
         plt.title("Transmission Spectrum $T(E)$")
@@ -337,7 +307,102 @@ class TransmissionAnalyzer:
         plt.legend()
         plt.grid(True)
         plt.show()
-       
+
+    @staticmethod
+    def compute_T(results_barrier, results_free):
+        """
+        Extract the transmission spectrum T(E) from a barrier/free-space run pair.
+
+        Returns
+        -------
+        E_eV_plot : ndarray    – energy axis (eV), valid & positive
+        T         : ndarray    – FDTD transmission coefficient
+        T_analy   : ndarray    – analytical TMM transmission coefficient
+        cfg                    – SimulationConfig of the barrier run
+        sigma_E_eV : float     – 1-sigma energy width of the wavepacket (eV)
+        E_center_eV : float    – total energy of the wavepacket (eV)
+        """
+        cfg = results_barrier["config"]
+        psi_t_bar  = results_barrier["time_signal_R"] + 1j * results_barrier["time_signal_I"]
+        psi_t_free = results_free["time_signal_R"]   + 1j * results_free["time_signal_I"]
+
+        N_pad    = cfg.nt * 8
+        fft_bar  = fft(psi_t_bar,  n=N_pad)
+        fft_free = fft(psi_t_free, n=N_pad)
+        freqs    = fftfreq(N_pad, cfg.dt)
+        E_all    = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
+
+        pos_mask  = E_all > 0
+        E_eV      = E_all[pos_mask]
+        Psi_bar   = fft_bar[pos_mask]
+        Psi_free  = fft_free[pos_mask]
+
+        U_obs_bar  = cfg.U_R[results_barrier["record_ix"]]
+        U_obs_free = results_free["config"].U_R[results_free["record_ix"]]
+        E_J        = E_eV * cfg.e
+
+        valid_E    = (E_J > U_obs_bar) & (E_J > U_obs_free)
+        E_eV_plot  = E_eV[valid_E]
+
+        k_bar  = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
+        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
+        T      = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
+
+        T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
+
+        k_0         = cfg.k_x
+        sigma_k     = 1.0 / (2.0 * cfg.sigma_x)
+        sigma_E_eV  = ((cfg.hbar**2 * k_0 / cfg.m_star) * sigma_k) / cfg.e
+        E_center_eV = cfg.total_E / cfg.e
+
+        return E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV
+
+    @staticmethod
+    def plot_transmission_sweep(sweep, title="Transmission Sweep", analytical=True):
+        """
+        Overlay multiple T(E) curves on a single figure.
+
+        Parameters
+        ----------
+        sweep : list of (label, results_barrier, results_free)
+            Each entry is a tuple produced by run_pair() – a string label plus
+            the two result dicts from SimulationRunner.execute().
+        title : str
+            Figure title.
+        analytical : bool
+            Whether to also draw the analytical TMM curves (dashed, same colour).
+        """
+        cmap = plt.get_cmap("tab10")
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        E_mins, E_maxs = [], []
+
+        for idx, (label, res_bar, res_free) in enumerate(sweep):
+            color = cmap(idx % 10)
+            E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV = \
+                TransmissionAnalyzer.compute_T(res_bar, res_free)
+
+            ax.plot(E_eV_plot, T,
+                    color=color, lw=2, label=f"{label} (FDTD)")
+            if analytical:
+                ax.plot(E_eV_plot, T_analy,
+                        color=color, lw=1.2, ls='--', alpha=0.7,
+                        label=f"{label} (Analytical)")
+
+            E_mins.append(E_center_eV - 3 * sigma_E_eV)
+            E_maxs.append(E_center_eV + 3 * sigma_E_eV)
+
+        # x-range covers the union of all wavepacket windows
+        ax.set_xlim(min(E_mins), max(E_maxs))
+        ax.set_ylim(0, 1.1)
+        ax.set_title(title)
+        ax.set_xlabel("Energy (eV)")
+        ax.set_ylabel("Transmission Coefficient T")
+        ax.legend(fontsize=8)
+        ax.grid(True)
+        plt.tight_layout()
+        plt.show()
+
 class SimulationRunner:
     @staticmethod
     def execute(frame_skip=100, record_ix=None, disable_tqdm=False, record_history=True, **kwargs):
@@ -522,73 +587,132 @@ if __name__ == '__main__':
     # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
     
     # # 1. Single Voltage Spectrum (Uncomment to view)
-    Double_barrier = True
-    if Double_barrier:
-        results_barrier = SimulationRunner.execute(n_y=1, 
-        n_z=1, 
-        V0=0.6, 
-        V_DC=-0.0, 
-        T_total=1000.0e-15, 
-        E_target=0.5, 
-        frame_skip=500)
+    # Double_barrier = True
+    # if Double_barrier:
+    #     results_barrier = SimulationRunner.execute(n_y=1, 
+    #     n_z=1, 
+    #     V0=0.6, 
+    #     V_DC=-0.0, 
+    #     T_total=1000.0e-15, 
+    #     E_target=0.5, 
+    #     frame_skip=500)
 
-        results_free = SimulationRunner.execute(n_y=1, 
-        n_z=1, 
-        V0=0.0, 
-        V_DC=0.0, 
-        T_total=1000.0e-15, 
-        E_target=0.5, 
-        frame_skip=500, 
-        dt=results_barrier["config"].dt)
-        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-        SimulationRunner.plot_animation(results_barrier)
+    #     results_free = SimulationRunner.execute(n_y=1, 
+    #     n_z=1, 
+    #     V0=0.0, 
+    #     V_DC=0.0, 
+    #     T_total=1000.0e-15, 
+    #     E_target=0.5, 
+    #     frame_skip=500, 
+    #     dt=results_barrier["config"].dt)
+    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    #     SimulationRunner.plot_animation(results_barrier)
     
     
-    Three_barriers = True
-    if Three_barriers:
-        results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
-        L_wells = [10e-9, 20e-9], 
-        n_y=1, 
-        n_z=1, 
-        V0=[0.6], 
-        V_DC=0.0, 
-        T_total=5000.0e-15, 
-        E_target=0.35, 
-        frame_skip=100)
+    # Three_barriers = True
+    # if Three_barriers:
+    #     results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
+    #     L_wells = [10e-9, 20e-9], 
+    #     n_y=1, 
+    #     n_z=1, 
+    #     V0=[0.6], 
+    #     V_DC=0.0, 
+    #     T_total=5000.0e-15, 
+    #     E_target=0.35, 
+    #     frame_skip=100)
 
-        results_free = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
-        L_wells = [10e-9, 20e-9], 
-        n_y=1, 
-        n_z=1, 
-        V0=0.0, 
-        V_DC=0.0, 
-        T_total=5000.0e-15, 
-        E_target=0.35, 
-        frame_skip=100, 
-        dt=results_barrier["config"].dt)
-        TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-        SimulationRunner.plot_animation(results_barrier)
+    #     results_free = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
+    #     L_wells = [10e-9, 20e-9], 
+    #     n_y=1, 
+    #     n_z=1, 
+    #     V0=0.0, 
+    #     V_DC=0.0, 
+    #     T_total=5000.0e-15, 
+    #     E_target=0.35, 
+    #     frame_skip=100, 
+    #     dt=results_barrier["config"].dt)
+    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
+    #     SimulationRunner.plot_animation(results_barrier)
     
-    # 2. Extract I-V Curve showing Negative Differential Resistance
-    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    do_IV_curve = False
-    if do_IV_curve:
-        voltages = np.linspace(0.1, 0.12, 50)
-        base_sim_kwargs = {
-            "V0": 0.6, "T_total": 1000.0e-15, 
-            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-            "frame_skip": 1000 # Only doing integration, not viewing animation
-        }
-        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    # # 2. Extract I-V Curve showing Negative Differential Resistance
+    # # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    # do_IV_curve = False
+    # if do_IV_curve:
+    #     voltages = np.linspace(0.1, 0.12, 50)
+    #     base_sim_kwargs = {
+    #         "V0": 0.6, "T_total": 1000.0e-15, 
+    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+    #         "frame_skip": 1000 # Only doing integration, not viewing animation
+    #     }
+    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
         
-    do_IV_curve_3b = False
-    if do_IV_curve_3b:
-        voltages = np.linspace(0.1, 0.25, 50)
-        base_sim_kwargs = {
-            "V0": 0.6, "T_total": 1000.0e-15, 
-            "L_barriers": [5e-9, 10e-9, 5e-9],
-            "L_wells": [10e-9, 20e-9],
-            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-            "frame_skip": 1000 # Only doing integration, not viewing animation
-        }
-        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    # do_IV_curve_3b = False
+    # if do_IV_curve_3b:
+    #     voltages = np.linspace(0.1, 0.25, 50)
+    #     base_sim_kwargs = {
+    #         "V0": 0.6, "T_total": 1000.0e-15, 
+    #         "L_barriers": [5e-9, 10e-9, 5e-9],
+    #         "L_wells": [10e-9, 20e-9],
+    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+    #         "frame_skip": 1000 # Only doing integration, not viewing animation
+    #     }
+    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+
+    # =========================================================================
+    # === PARAMETER SWEEPS — overlay multiple T(E) curves on one figure ===
+    # Flip any variable below to True to run that sweep.
+    # Each sweep runs a barrier + free-space pair for every parameter value,
+    # then overlays all T(E) curves (FDTD solid, Analytical dashed) on one plot.
+    # =========================================================================
+
+    def run_pair(label, shared_kwargs, frame_skip=500, animate=False):
+        """Run barrier + free-space pair and return (label, res_bar, res_free)."""
+        res_bar  = SimulationRunner.execute(**shared_kwargs, frame_skip=frame_skip)
+        res_free = SimulationRunner.execute(
+            **{**shared_kwargs, "V0": 0.0, "V_DC": 0.0},
+            frame_skip=frame_skip,
+            dt=res_bar["config"].dt)
+        if animate:
+            SimulationRunner.plot_animation(res_bar)
+        return (label, res_bar, res_free)
+
+    # --- Sweep V0 (barrier height) ---
+    sweep_V0 = True
+    if sweep_V0:
+        base = dict(n_y=1, n_z=1, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    T_total=2000e-15, E_target=0.35)
+        sweep = [run_pair(f"V0 = {v} eV", {**base, "V0": v})
+                 for v in [0.2, 0.4, 0.6]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Height V0")
+
+    # --- Sweep L_wells (well length) ---
+    sweep_well = True
+    if sweep_well:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9],
+                    T_total=2000e-15, E_target=0.35)
+        sweep = [run_pair(f"Lw = {int(Lw*1e9)} nm", {**base, "L_wells": [Lw]})
+                 for Lw in [15e-9, 30e-9, 50e-9]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Well Length")
+
+    # --- Sweep L_barriers (barrier length, same for both barriers) ---
+    sweep_barrier = True
+    if sweep_barrier:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_wells=[30e-9],
+                    T_total=2000e-15, E_target=0.35)
+        sweep = [run_pair(f"Lb = {int(Lb*1e9)} nm", {**base, "L_barriers": [Lb, Lb]})
+                 for Lb in [5e-9, 10e-9, 20e-9]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Length")
+
+    # --- Sweep E_target (wavepacket centre energy) ---
+    sweep_Etarget = True
+    if sweep_Etarget:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    T_total=2000e-15)
+        sweep = [run_pair(f"E_target = {E} eV", {**base, "E_target": E})
+                 for E in [0.15, 0.25, 0.35, 0.45]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Probe Energy E_target")
+
