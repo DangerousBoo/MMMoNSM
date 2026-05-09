@@ -1,4 +1,3 @@
-from multiprocessing import synchronize
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -14,10 +13,9 @@ class SimulationConfig:
         self.__dict__.update(kwargs)
         
         # Physical Constants
-        self.hbar   = 1.054571817e-34 
-        self.m_e    = 9.1093837015e-31 
-        self.e      = 1.602176634e-19  
-        self.m_star = kwargs.get("m_star", 0.023 * self.m_e)
+        self.hbar   = 1.054571817e-34
+        self.e      = 1.602176634e-19
+        self.m_star = kwargs.get("m_star", 0.023 * 9.1093837015e-31)
         
         # Domain Dimensions
         self.dx         = kwargs.get("dx", 0.5e-9)
@@ -56,10 +54,10 @@ class SimulationConfig:
         self.i_buf2  = np.round(self.x_buf2 / self.dx).astype(int)
 
         # Transversal Energy
-        self.Ly = getattr(self, "Ly", 40e-9)
-        self.Lz = getattr(self, "Lz", 40e-9)
-        self.n_y = getattr(self, "n_y", 1)
-        self.n_z = getattr(self, "n_z", 1)
+        self.Ly = kwargs.get("Ly", 40e-9)
+        self.Lz = kwargs.get("Lz", 40e-9)
+        self.n_y = kwargs.get("n_y", 1)
+        self.n_z = kwargs.get("n_z", 1)
         self.E_trans = (self.hbar**2 / (2 * self.m_star)) * ((np.pi * self.n_y / self.Ly)**2 + (np.pi * self.n_z / self.Lz)**2)
         
         # Energy and Potentials
@@ -83,19 +81,17 @@ class SimulationConfig:
         else:
             raise ValueError(f"Unsupported finite difference order: {self.order}")
 
-        self.dt = kwargs.get("dt", 1 * dt_max) # Allow dt override to match domains
-        self.T_total = getattr(self, "T_total", 100e-15)
-        self.nt = int(np.ceil(self.T_total / self.dt))
+        self.dt      = kwargs.get("dt", dt_max)
+        self.T_total = kwargs.get("T_total", 100e-15)
+        self.nt      = int(np.ceil(self.T_total / self.dt))
         
-        # Initial Wavepacket Setup
-        # E_target = kinetic energy at the injection point (bias-independent).
-        # This ensures k_x > 0 regardless of the applied V_DC.
-        self.E_target  = getattr(self, "E_target", 0.2) * self.e  # KE at injection point
-        self.x_0       = self.x_abs1 + self.L_buffer * 0.3
-        self.sigma_x   = getattr(self, "sigma_x", 15e-9)
-        i_x0           = int(self.x_0 / self.dx)
-        self.total_E   = self.E_target + self.U_R[i_x0]  # True total energy = KE + U(x_0)
-        self.k_x       = np.sqrt(2 * self.m_star * self.E_target) / self.hbar  # Always real & positive
+        # Wavepacket: E_target is kinetic energy at injection (bias-independent, always > 0)
+        self.E_target = kwargs.get("E_target", 0.2) * self.e
+        self.sigma_x  = kwargs.get("sigma_x", 15e-9)
+        self.x_0      = self.x_abs1 + self.L_buffer * 0.3
+        i_x0          = int(self.x_0 / self.dx)
+        self.total_E  = self.E_target + self.U_R[i_x0]
+        self.k_x      = np.sqrt(2 * self.m_star * self.E_target) / self.hbar
 
     def _build_potentials(self):
         def add_barrier_potential(x_start, x_end, V_0):
@@ -453,45 +449,36 @@ class SimulationRunner:
 
 class IVCharacteristic:
     @staticmethod
-    def _run_bias(V, base_kwargs): # Removed the pre-computed fft_free and U_obs_free
-        e = 1.602176634e-19
-        h = 6.62607015e-34
-        k_B = 1.380649e-23
-        Temp = 4.0 # 4K for sharp Fermi edge
-        mu_L = 22.436e-3 * e 
+    def _run_bias(V, base_kwargs):
+        e, h, k_B = 1.602176634e-19, 6.62607015e-34, 1.380649e-23
+        Temp = 4.0  # 4 K for sharp Fermi edge
+        mu_L = 22.436e-3 * e
         mu_R = mu_L - e * V
-        
-        free_kwargs = base_kwargs.copy()
-        free_kwargs.update({'V0': 0.0, 'n_y': 0, 'n_z': 0, 'V_DC': V})
-        cfg_free = SimulationConfig(**free_kwargs)
-        
-        # Run free space 
-        res_f = SimulationRunner.execute(**free_kwargs, disable_tqdm=True, record_history=False)
-        psi_free_R, psi_free_I = res_f["time_signal_R"] , res_f["time_signal_I"]
-        
-        j_x_free = (e * cfg_free.hbar / cfg_free.m_star) * (psi_free_R * np.gradient(psi_free_I, cfg_free.dx) - psi_free_I * np.gradient(psi_free_R, cfg_free.dx))
-        U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
 
-        cfg_1d_kwargs = {**base_kwargs, "n_y": 0, "n_z": 0, "V_DC": V}
-        res_b = SimulationRunner.execute(**cfg_1d_kwargs, disable_tqdm=True, record_history=False)
+        def j_current(res):
+            c  = res["config"]
+            pR, pI = res["time_signal_R"], res["time_signal_I"]
+            return (c.hbar / c.m_star) * (pR * np.gradient(pI, c.dx) - pI * np.gradient(pR, c.dx))
+
+        res_f = SimulationRunner.execute(**{**base_kwargs, 'V0': 0.0, 'n_y': 0, 'n_z': 0, 'V_DC': V},
+                                         disable_tqdm=True, record_history=False)
+        res_b = SimulationRunner.execute(**{**base_kwargs, 'n_y': 0, 'n_z': 0, 'V_DC': V},
+                                         disable_tqdm=True, record_history=False)
 
         cfg = res_b["config"]
-        psi_bar_R, psi_bar_I = res_b["time_signal_R"] , res_b["time_signal_I"]
-        j_x_bar = (e * cfg.hbar / cfg.m_star) * (psi_bar_R * np.gradient(psi_bar_I, cfg.dx) - psi_bar_I * np.gradient(psi_bar_R, cfg.dx))
-
         N_pad = cfg.nt * 6
-        fft_free = fft(j_x_free, n=N_pad)
-        fft_bar = fft(j_x_bar, n=N_pad)
         freqs = fftfreq(N_pad, cfg.dt)
-        
-        E_total_J = -(2 * np.pi * cfg.hbar * freqs)
-        pos_mask = E_total_J > 0
-        
-        E_J = E_total_J[pos_mask]
-        j_xb = fft_bar[pos_mask]
-        j_xf = fft_free[pos_mask]
-                
-        U_obs_bar  = res_b["config"].U_R[res_b["record_ix"]]
+        E_J   = -(2 * np.pi * cfg.hbar * freqs)
+
+        J_bar  = fft(j_current(res_b), n=N_pad)
+        J_free = fft(j_current(res_f), n=N_pad)
+
+        pos_mask   = E_J > 0
+        E_J        = E_J[pos_mask]
+        j_xb       = J_bar[pos_mask]
+        j_xf       = J_free[pos_mask]
+
+        U_obs_bar  = cfg.U_R[res_b["record_ix"]]
         U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
                 
         valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
@@ -568,83 +555,24 @@ class IVCharacteristic:
         plt.show()
 
 if __name__ == '__main__':
-    # === RUN EXPERIMENT ===
-    # Als je T_tot te laag neemt dan zie je zwakkere versies van de piekjes (ik denk Q factor van de caviteit gwn)
-    
-    # # 1. Single Voltage Spectrum (Uncomment to view)
-    # Double_barrier = True
-    # if Double_barrier:
-    #     results_barrier = SimulationRunner.execute(n_y=1, 
-    #     n_z=1, 
-    #     V0=0.6, 
-    #     V_DC=-0.0, 
-    #     T_total=1000.0e-15, 
-    #     E_target=0.5, 
-    #     frame_skip=500)
 
-    #     results_free = SimulationRunner.execute(n_y=1, 
-    #     n_z=1, 
-    #     V0=0.0, 
-    #     V_DC=0.0, 
-    #     T_total=1000.0e-15, 
-    #     E_target=0.5, 
-    #     frame_skip=500, 
-    #     dt=results_barrier["config"].dt)
-    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    #     SimulationRunner.plot_animation(results_barrier)
-    
-    
-    # Three_barriers = True
-    # if Three_barriers:
-    #     results_barrier = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
-    #     L_wells = [10e-9, 20e-9], 
-    #     n_y=1, 
-    #     n_z=1, 
-    #     V0=[0.6], 
-    #     V_DC=0.0, 
-    #     T_total=5000.0e-15, 
-    #     E_target=0.35, 
-    #     frame_skip=100)
+    # --- Single T(E) spectrum ---
+    do_single = False
+    if do_single:
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=1000e-15, E_target=0.35, frame_skip=500)
+        res_bar  = SimulationRunner.execute(**kw)
+        res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
+        TransmissionAnalyzer.plot_transmission(res_bar, res_free)
+        SimulationRunner.plot_animation(res_bar)
 
-    #     results_free = SimulationRunner.execute(L_barriers = [5e-9, 10e-9, 5e-9],
-    #     L_wells = [10e-9, 20e-9], 
-    #     n_y=1, 
-    #     n_z=1, 
-    #     V0=0.0, 
-    #     V_DC=0.0, 
-    #     T_total=5000.0e-15, 
-    #     E_target=0.35, 
-    #     frame_skip=100, 
-    #     dt=results_barrier["config"].dt)
-    #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
-    #     SimulationRunner.plot_animation(results_barrier)
-    
-    # 2. Extract I-V Curve showing Negative Differential Resistance
-    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    # --- I-V curve (NDR) ---
     do_IV_curve = False
     if do_IV_curve:
         voltages = np.linspace(0.1, 0.12, 50)
-        base_sim_kwargs = {
-            "V0": 0.6, "T_total": 1000.0e-15, 
-            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-            "frame_skip": 1000 # Only doing integration, not viewing animation
-        }
-        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
-        
-    # do_IV_curve_3b = False
-    # if do_IV_curve_3b:
-    #     voltages = np.linspace(0.1, 0.25, 50)
-    #     base_sim_kwargs = {
-    #         "V0": 0.6, "T_total": 1000.0e-15, 
-    #         "L_barriers": [5e-9, 10e-9, 5e-9],
-    #         "L_wells": [10e-9, 20e-9],
-    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-    #         "frame_skip": 1000 # Only doing integration, not viewing animation
-    #     }
-    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 1000e-15, "E_target": 0.022})
 
     # =========================================================================
-    # === PARAMETER SWEEPS — overlay multiple T(E) curves on one figure ===
+    # === PARAMETER SWEEPS ===
     # =========================================================================
 
     def run_pair(label, shared_kwargs, frame_skip=500, animate=False):
