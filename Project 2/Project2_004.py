@@ -245,7 +245,11 @@ class TransmissionAnalyzer:
 
         plt.figure(figsize=(8, 4))
         plt.plot(E_eV_plot, T, 'm-', lw=2, label="FDTD Simulation")
-        plt.plot(E_eV_plot, T_analy, 'k--', lw=1.5, label="Analytical (V_DC=0)")
+
+        # Dense analytical curve so narrow resonance peaks are smooth
+        E_dense = np.linspace(E_min, E_max, 2000)
+        T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
+        plt.plot(E_dense, T_dense, 'k--', lw=1.5, label="Analytical (V_DC=0)")
 
         plt.axvline(E_min, color='r', linestyle='--', alpha=0.6, label=r'$\pm 3\sigma_E$ width')
         plt.axvline(E_max, color='r', linestyle='--', alpha=0.6)
@@ -337,20 +341,26 @@ class TransmissionAnalyzer:
             ax.plot(E_eV_plot, T,
                     color=color, lw=2, label=f"{label} (FDTD)")
             if analytical:
-                ax.plot(E_eV_plot, T_analy,
+                # Dense analytical curve evaluated over the wavepacket window
+                E_min_i = E_center_eV - 3 * sigma_E_eV
+                E_max_i = E_center_eV + 3 * sigma_E_eV
+                E_dense = np.linspace(E_min_i, E_max_i, 2000)
+                T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
+                ax.plot(E_dense, T_dense,
                         color=color, lw=1.2, ls='--', alpha=0.7,
                         label=f"{label} (Analytical)")
 
             E_mins.append(E_center_eV - 3 * sigma_E_eV)
             E_maxs.append(E_center_eV + 3 * sigma_E_eV)
 
-            #finite well levels
+            # Finite well levels
             levels = TransmissionAnalyzer._finite_well_levels(cfg, min(E_mins), max(E_maxs))
             if len(levels) > 0:
                 if not well_legend_added:
                     ax.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels')
                     well_legend_added = True
-                ax.plot(levels, np.ones_like(levels) * 0.05, '|', color='b', markersize=10, alpha=0.7)
+                for E_level in levels:
+                    ax.axvline(E_level, color='b', linestyle='-.', lw=1.0, alpha=0.7)
 
         # x-range covers the union of all wavepacket windows
         ax.set_xlim(min(E_mins), max(E_maxs))
