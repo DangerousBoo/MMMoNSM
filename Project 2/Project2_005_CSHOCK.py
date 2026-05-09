@@ -93,6 +93,19 @@ class SimulationConfig:
         self.total_E  = self.E_target + self.U_R[i_x0]
         self.k_x      = np.sqrt(2 * self.m_star * self.E_target) / self.hbar
 
+        # Absorbers must be built after E_target is known so W_max scales correctly
+        self._build_absorbers()
+
+    def _build_absorbers(self):
+        lambda_dB = 2 * np.pi / self.k_x
+        n_layer  = int(np.ceil(4 * lambda_dB / self.dx))
+
+        i_arr = np.arange(n_layer)
+        dist_factor = ((n_layer - i_arr) / n_layer) ** 4
+        W_max = 2.0 * self.E_target
+        self.U_I[:n_layer]  = W_max * dist_factor
+        self.U_I[-n_layer:] = W_max * dist_factor[::-1]
+
     def _build_potentials(self):
         def add_barrier_potential(x_start, x_end, V_0):
             i_start = int(np.round(x_start / self.dx))
@@ -113,11 +126,6 @@ class SimulationConfig:
             tilt = bias * (1.0 - (x_dev - self.x_bars[0]) / (self.x_buf2 - self.x_bars[0]))
             self.U_R[self.i_bars[0]:self.i_buf2] += tilt
             
-        i_arr = np.arange(self.n_layer)
-        dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
-        abs_V = np.max(self.V0_barriers) if np.any(self.V0_barriers != 0) else 0.2 * self.e
-        self.U_I[:self.n_layer] = 2.0 * abs_V * dist_factor
-        self.U_I[-self.n_layer:] = 2.0 * abs_V * dist_factor[::-1]
 
 class SchrodingerSolver:
     def __init__(self, cfg):
@@ -272,52 +280,38 @@ class TransmissionAnalyzer:
     @staticmethod
     def compute_T(results_barrier, results_free):
         """
-        Extract the transmission spectrum T(E) from a barrier/free-space run pair.
-
-        T(E) = (k_bar / k_free) · |Ψ_bar(E)|² / |Ψ_free(E)|²
-
-        The recorder sits in the free-space region, where each frequency component
-        is a plane wave. The probability-current ratio therefore reduces exactly to
-        this velocity-corrected amplitude-squared ratio — no spatial derivative needed.
-
-        Returns
-        -------
-        E_eV_plot  : ndarray   – energy axis (eV), propagating modes only
-        T          : ndarray   – FDTD transmission coefficient
-        T_analy    : ndarray   – analytical TMM transmission coefficient
-        cfg                    – SimulationConfig of the barrier run
-        sigma_E_eV : float     – 1-sigma energy width of the wavepacket (eV)
-        E_center_eV: float     – total energy of the wavepacket (eV)
+        T(E) = |J_bar(E)| / |J_free(E)|, where
+        J(ω) = (ℏ/m) Im[Ψ*(ω) · DΨ(ω)], with Ψ = FFT(ψ) and DΨ = FFT(∂ψ/∂x).
+        ψ and ∂ψ/∂x are recorded separately so they can be FFT'd independently,
+        avoiding the bilinear cross-terms that corrupt FFT(j(t)).
         """
         cfg      = results_barrier["config"]
         cfg_free = results_free["config"]
 
-        psi_t_bar  = results_barrier["time_signal_R"] + 1j * results_barrier["time_signal_I"]
-        psi_t_free = results_free["time_signal_R"]   + 1j * results_free["time_signal_I"]
+        def spectral_current(res, c, N_pad):
+            Psi  = fft(res["psi_R"]  + 1j * res["psi_I"],  n=N_pad)
+            DPsi = fft(res["dpsi_R"] + 1j * res["dpsi_I"], n=N_pad)
+            return (c.hbar / c.m_star) * np.imag(np.conj(Psi) * DPsi)
 
-        N_pad  = cfg.nt * 8
-        freqs  = fftfreq(N_pad, cfg.dt)
-        E_all  = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
+        N_pad = cfg.nt * 1
+        freqs = fftfreq(N_pad, cfg.dt)
+        E_all = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
 
-        Psi_bar  = fft(psi_t_bar,  n=N_pad)
-        Psi_free = fft(psi_t_free, n=N_pad)
+        J_bar  = spectral_current(results_barrier, cfg,      N_pad)
+        J_free = spectral_current(results_free,    cfg_free, N_pad)
 
         pos_mask = E_all > 0
         E_eV     = E_all[pos_mask]
         E_J      = E_eV * cfg.e
-        Psi_bar  = Psi_bar[pos_mask]
-        Psi_free = Psi_free[pos_mask]
+        J_bar    = J_bar[pos_mask]
+        J_free   = J_free[pos_mask]
 
         U_obs_bar  = cfg.U_R[results_barrier["record_ix"]]
         U_obs_free = cfg_free.U_R[results_free["record_ix"]]
         valid_E    = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_eV_plot  = E_eV[valid_E]
 
-        # velocity correction: v ∝ k = √(2m*(E−U)) / ℏ  (ℏ cancels in the ratio)
-        k_bar  = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
-        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
-        T      = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
-
+        T = np.abs(J_bar[valid_E]) / np.abs(J_free[valid_E])
         T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
 
         sigma_E_eV  = ((cfg.hbar**2 * cfg.k_x / cfg.m_star) / (2.0 * cfg.sigma_x)) / cfg.e
@@ -378,29 +372,42 @@ class SimulationRunner:
     def execute(frame_skip=100, record_ix=None, disable_tqdm=False, record_history=True, **kwargs):
         cfg = SimulationConfig(**kwargs)
         solver = SchrodingerSolver(cfg)
-        
+
         n_frames = int(np.ceil(cfg.nt / frame_skip)) if record_history else 0
-        history = np.zeros((n_frames, cfg.nx), dtype=np.float32) if record_history else None
+        history  = np.zeros((n_frames, cfg.nx), dtype=np.float32) if record_history else None
         record_ix = record_ix or int(cfg.x_buf2 / cfg.dx) + int(20e-9 / cfg.dx)
-            
-        rec_R, rec_I = np.zeros(cfg.nt), np.zeros(cfg.nt)
-        frame_idx = 0
-        
+        # ix-1 and ix+1 are in the same free-space buffer region (only ±0.5 nm away)
+        ix = record_ix
+
+        # Record ψ and ∂ψ/∂x separately — combined in freq. domain to avoid bilinear cross-terms
+        rec_psi_R  = np.zeros(cfg.nt)
+        rec_psi_I  = np.zeros(cfg.nt)
+        rec_dpsi_R = np.zeros(cfg.nt)
+        rec_dpsi_I = np.zeros(cfg.nt)
+        frame_idx  = 0
+
         for it in tqdm(range(cfg.nt), desc=f"Simulating (nt={cfg.nt})", disable=disable_tqdm):
             solver.step()
-            rec_R[it], rec_I[it] = solver.psi_R[record_ix], solver.psi_I[record_ix]
-            
+            rec_psi_R[it]  = solver.psi_R[ix]
+            rec_psi_I[it]  = solver.psi_I[ix]
+            rec_dpsi_R[it] = (solver.psi_R[ix+1] - solver.psi_R[ix-1]) / (2 * cfg.dx)
+            rec_dpsi_I[it] = (solver.psi_I[ix+1] - solver.psi_I[ix-1]) / (2 * cfg.dx)
+
             if record_history and not it % frame_skip and frame_idx < n_frames:
                 history[frame_idx] = solver.density
                 frame_idx += 1
-                
+        # Check if wavepacket has cleared the device region (trapped state warning)
+        device_prob = np.sum(solver.density[cfg.i_bars[0]:cfg.i_buf2]) * cfg.dx
+        if device_prob > 0.01:
+            print(f"Warning: wavepacket still in device region (P={device_prob:.3f}). Increase T_total.")
+
         return {
-            "config": cfg,
-            "history": history,
-            "frame_skip": frame_skip,
+            "config":    cfg,
+            "history":   history,
+            "frame_skip":frame_skip,
             "record_ix": record_ix,
-            "time_signal_R": rec_R,
-            "time_signal_I": rec_I
+            "psi_R":  rec_psi_R,  "psi_I":  rec_psi_I,
+            "dpsi_R": rec_dpsi_R, "dpsi_I": rec_dpsi_I,
         }
         
     @staticmethod
@@ -465,23 +472,23 @@ class IVCharacteristic:
         mu_L = 22.436e-3 * e
         mu_R = mu_L - e * V
 
-        def j_current(res):
-            c  = res["config"]
-            pR, pI = res["time_signal_R"], res["time_signal_I"]
-            return (c.hbar / c.m_star) * (pR * np.gradient(pI, c.dx) - pI * np.gradient(pR, c.dx))
-
         res_f = SimulationRunner.execute(**{**base_kwargs, 'V0': 0.0, 'n_y': 0, 'n_z': 0, 'V_DC': V},
                                          disable_tqdm=True, record_history=False)
         res_b = SimulationRunner.execute(**{**base_kwargs, 'n_y': 0, 'n_z': 0, 'V_DC': V},
                                          disable_tqdm=True, record_history=False)
+
+        def spec_J(res, c, N):
+            Psi  = fft(res["psi_R"]  + 1j * res["psi_I"],  n=N)
+            DPsi = fft(res["dpsi_R"] + 1j * res["dpsi_I"], n=N)
+            return (c.hbar / c.m_star) * np.imag(np.conj(Psi) * DPsi)
 
         cfg = res_b["config"]
         N_pad = cfg.nt * 6
         freqs = fftfreq(N_pad, cfg.dt)
         E_J   = -(2 * np.pi * cfg.hbar * freqs)
 
-        J_bar  = fft(j_current(res_b), n=N_pad)
-        J_free = fft(j_current(res_f), n=N_pad)
+        J_bar  = spec_J(res_b, cfg,             N_pad)
+        J_free = spec_J(res_f, res_f["config"], N_pad)
 
         pos_mask   = E_J > 0
         E_J        = E_J[pos_mask]
@@ -490,12 +497,17 @@ class IVCharacteristic:
 
         U_obs_bar  = cfg.U_R[res_b["record_ix"]]
         U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
-                
-        valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
+
+        # Only use bins where the free-space signal is above the noise floor.
+        # In the wavepacket wings J_free → 0; dividing by near-zero gives T >> 1
+        # and contaminates the Landauer integral — this gets WORSE with longer T_total
+        # because the FFT has more bins in the noisy wings.
+        spectral_mask = np.abs(j_xf) > 1e-3 * np.max(np.abs(j_xf))
+        valid = (E_J > U_obs_bar) & (E_J > U_obs_free) & spectral_mask
         E_J = E_J[valid]
-                
+
         T_E = np.abs(j_xb[valid]) / np.abs(j_xf[valid])
-        
+
         # Sort to ensure np.trapezoid integrates forward
         sort_idx = np.argsort(E_J)
         E_J = E_J[sort_idx]
@@ -534,16 +546,36 @@ class IVCharacteristic:
         return np.array(currents)
 
     @staticmethod
+    def _shockley_overlay(ax, voltages, currents, label=None):
+        """Fit and draw I_Shockley so it matches the RTD data at the voltage endpoints,
+        then plot I_RTD + I_Shockley as the total 'realistic' diode curve."""
+        e, k_B, T = 1.602176634e-19, 1.380649e-23, 300.0  # room-temp diode
+        n_ideal = 1.5  # ideality factor
+        V = voltages
+        # Anchor I_s so the Shockley curve sits near the valley current (min of RTD)
+        I_valley = np.min(currents)
+        V_mid    = V[len(V) // 2]
+        I_s = I_valley / (np.exp(e * V_mid / (n_ideal * k_B * T)) - 1)
+        I_shockley = I_s * (np.exp(e * V / (n_ideal * k_B * T)) - 1)
+        I_total    = currents + I_shockley
+        lbl = f"{label} + Shockley" if label else "RTD + Shockley"
+        ax.semilogy(V * 1000, I_shockley * 1e6, 'k:', lw=1.2, alpha=0.5,
+                    label='Shockley background' if label is None else '_nolegend_')
+        ax.semilogy(V * 1000, I_total * 1e6, 'k--', lw=2, alpha=0.85, label=lbl)
+
+    @staticmethod
     def plot_IV(V_dc_arr, base_kwargs):
-        
         currents = IVCharacteristic.compute_IV_curve(V_dc_arr, base_kwargs)
-            
-        plt.figure(figsize=(8, 5))
-        plt.semilogy(V_dc_arr * 1000, currents * 1e6, 'r-o', lw=2)
-        plt.title("Resonant Tunneling Diode I-V Characteristic")
-        plt.xlabel("$V_{DC}$ (mV)")
-        plt.ylabel("Current (µA)")
-        plt.grid(True, which="both", ls="--")
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.semilogy(V_dc_arr * 1000, currents * 1e6, 'r-o', lw=2, label='RTD (Landauer)')
+        IVCharacteristic._shockley_overlay(ax, V_dc_arr, currents)
+        ax.set_title("Resonant Tunneling Diode I-V Characteristic")
+        ax.set_xlabel("$V_{DC}$ (mV)")
+        ax.set_ylabel("Current (µA)")
+        ax.legend(fontsize=8)
+        ax.grid(True, which="both", ls="--")
+        plt.tight_layout()
         plt.show()
 
     @staticmethod
@@ -553,8 +585,10 @@ class IVCharacteristic:
 
         for idx, (label, currents) in enumerate(sweep):
             color = cmap(idx % 10)
-            ax.semilogy(voltages * 1000, np.array(currents) * 1e6,
+            c = np.array(currents)
+            ax.semilogy(voltages * 1000, c * 1e6,
                         color=color, lw=2, marker='o', label=label)
+            IVCharacteristic._shockley_overlay(ax, voltages, c, label=label)
 
         ax.set_title(title)
         ax.set_xlabel("$V_{DC}$ (mV)")
@@ -569,17 +603,17 @@ if __name__ == '__main__':
     # --- Single T(E) spectrum ---
     do_single = False
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=1000e-15, E_target=0.35, frame_skip=500)
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=3000e-15, E_target=0.35, frame_skip=500)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
         SimulationRunner.plot_animation(res_bar)
 
     # --- I-V curve (NDR) ---
-    do_IV_curve = False
+    do_IV_curve = True
     if do_IV_curve:
-        voltages = np.linspace(0.1, 0.12, 50)
-        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 1000e-15, "E_target": 0.022})
+        voltages = np.linspace(0.1, 1, 100)
+        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 5000e-15, "E_target": 0.02234})
 
     # =========================================================================
     # === PARAMETER SWEEPS ===
@@ -619,13 +653,13 @@ if __name__ == '__main__':
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     V0=0.6, E_target=0.35)
         sweep_transmission = [run_pair(f"T_total = {v}", {**base, "T_total": v})
-                              for v in [500e-15, 1000e-15, 2000e-15, 3000e-15, 4000e-15]]
+                              for v in [1000e-15]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Total Simulation Time T_total")
         
-        iv_voltages = np.linspace(0.1, 0.12, 50)
+        iv_voltages = np.linspace(0.11, 0.13, 50)
         sweep_IV = [
             (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
-            for v in [500e-15, 1000e-15, 2000e-15]
+            for v in [10000e-15]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
