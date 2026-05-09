@@ -588,7 +588,7 @@ if __name__ == '__main__':
         SimulationRunner.plot_animation(res_bar)
 
     # --- I-V curve (NDR) ---
-    do_IV_curve = True
+    do_IV_curve = False
     if do_IV_curve:
         voltages = np.linspace(0.1, 0.12, 50)
         IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 5000e-15, "E_target": 0.02234})
@@ -631,13 +631,13 @@ if __name__ == '__main__':
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     V0=0.6, E_target=0.35)
         sweep_transmission = [run_pair(f"T_total = {v}", {**base, "T_total": v})
-                              for v in [500e-15,1000e-15,2000e-15,5000e-15]]
+                              for v in [500e-15,1000e-15,2000e-15]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Total Simulation Time T_total")
         
-        iv_voltages = np.linspace(0.1, 0.12, 50)
+        iv_voltages = np.linspace(0.11, 0.13, 50)
         sweep_IV = [
             (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
-            for v in [500e-15,1000e-15,2000e-15,5000e-15]
+            for v in [500e-15,1000e-15,2000e-15]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
