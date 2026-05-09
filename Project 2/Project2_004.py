@@ -171,77 +171,38 @@ class TransmissionAnalyzer:
         eps = 1e-12
 
         for j, Lw in enumerate(cfg.L_wells):
-            if j >= len(cfg.x_wells) or (j + 1) >= len(cfg.L_barriers):
-                continue
-
-            i_w0 = int(np.round(cfg.x_wells[j] / cfg.dx))
-            i_w1 = int(np.round((cfg.x_wells[j] + Lw) / cfg.dx))
-            if i_w1 <= i_w0 + 2:
-                continue
-
-            i_bl0 = int(np.round(cfg.x_bars[j] / cfg.dx))
-            i_bl1 = int(np.round((cfg.x_bars[j] + cfg.L_barriers[j]) / cfg.dx))
-            i_br0 = int(np.round(cfg.x_bars[j + 1] / cfg.dx))
-            i_br1 = int(np.round((cfg.x_bars[j + 1] + cfg.L_barriers[j + 1]) / cfg.dx))
-
-            U_w = float(np.mean(cfg.U_R[i_w0:i_w1]))
-            U_bl = float(np.max(cfg.U_R[i_bl0:i_bl1]))
-            U_br = float(np.max(cfg.U_R[i_br0:i_br1]))
-
-            # Use the smaller neighboring barrier as effective confinement depth.
-            V_eff = min(U_bl, U_br) - U_w
-            if V_eff <= 0:
-                continue
+            if j >= len(cfg.x_wells) or j + 1 >= len(cfg.L_barriers): continue
+            iw = (np.round(cfg.x_wells[j] / cfg.dx).astype(int), np.round((cfg.x_wells[j] + Lw) / cfg.dx).astype(int))
+            ibl = (np.round(cfg.x_bars[j] / cfg.dx).astype(int), np.round((cfg.x_bars[j] + cfg.L_barriers[j]) / cfg.dx).astype(int))
+            ibr = (np.round(cfg.x_bars[j+1] / cfg.dx).astype(int), np.round((cfg.x_bars[j+1] + cfg.L_barriers[j+1]) / cfg.dx).astype(int))
+            
+            U_w   = float(np.mean(cfg.U_R[iw[0]:iw[1]]))
+            V_eff = min(np.max(cfg.U_R[ibl[0]:ibl[1]]), np.max(cfg.U_R[ibr[0]:ibr[1]])) - U_w
+            if iw[1] <= iw[0] + 2 or V_eff <= 0: continue
 
             z0 = 0.5 * Lw * np.sqrt(2.0 * cfg.m_star * V_eff) / cfg.hbar
-            if z0 <= 0:
-                continue
+            sq = lambda z: np.sqrt(max(z0**2 - z**2, 0.0))
+            funcs = [lambda z: z * np.tan(z) - sq(z),      # even parity
+                     lambda z: -z / np.tan(z) - sq(z)]     # odd parity
 
-            def f_even(z):
-                return z * np.tan(z) - np.sqrt(max(z0 * z0 - z * z, 0.0))
-
-            def f_odd(z):
-                return -z / np.tan(z) - np.sqrt(max(z0 * z0 - z * z, 0.0))
-
-            n_max = int(np.floor(2.0 * z0 / np.pi)) + 2
-            for n in range(n_max):
-                a = n * np.pi / 2.0 + eps
-                b = (n + 1) * np.pi / 2.0 - eps
-                if a >= z0:
-                    break
-                b = min(b, z0 - eps)
-                if b <= a:
-                    continue
-
-                f = f_even if (n % 2 == 0) else f_odd
+            for n in range(int(np.floor(2.0 * z0 / np.pi)) + 2):
+                a, b = n * np.pi / 2.0 + eps, min((n + 1) * np.pi / 2.0 - eps, z0 - eps)
+                if a >= z0 or b <= a: continue
+                f = funcs[n % 2]
                 try:
                     fa, fb = f(a), f(b)
-                    if np.isnan(fa) or np.isnan(fb) or np.isinf(fa) or np.isinf(fb):
-                        continue
-                    if fa * fb > 0:
-                        continue
+                    if not (np.isfinite(fa) and np.isfinite(fb) and fa * fb < 0): continue
                     z = brentq(f, a, b, maxiter=200)
                 except Exception:
                     continue
-
-                E_rel = (2.0 * cfg.hbar * cfg.hbar * z * z) / (cfg.m_star * Lw * Lw)
-                E_abs_eV = (U_w + E_rel) / cfg.e
+                E_abs_eV = (U_w + 2.0 * cfg.hbar**2 * z**2 / (cfg.m_star * Lw**2)) / cfg.e
                 if E_low_eV <= E_abs_eV <= E_high_eV:
                     levels_eV.append(E_abs_eV)
 
         if not levels_eV:
             return np.array([], dtype=float)
-
-        levels = np.array(levels_eV, dtype=float)
-        levels.sort()
-
-        dedup = [levels[0]]
-        tol = 5e-4  # eV
-        for val in levels[1:]:
-            if abs(val - dedup[-1]) > tol:
-                dedup.append(val)
-
-        return np.array(dedup, dtype=float)
+        levels = np.sort(np.array(levels_eV))
+        return levels[np.concatenate(([True], np.diff(levels) > 5e-4))]  # deduplicate
 
     @staticmethod
     def get_analytical_T(E_eV_arr, cfg):
@@ -313,46 +274,53 @@ class TransmissionAnalyzer:
         """
         Extract the transmission spectrum T(E) from a barrier/free-space run pair.
 
+        T(E) = (k_bar / k_free) · |Ψ_bar(E)|² / |Ψ_free(E)|²
+
+        The recorder sits in the free-space region, where each frequency component
+        is a plane wave. The probability-current ratio therefore reduces exactly to
+        this velocity-corrected amplitude-squared ratio — no spatial derivative needed.
+
         Returns
         -------
-        E_eV_plot : ndarray    – energy axis (eV), valid & positive
-        T         : ndarray    – FDTD transmission coefficient
-        T_analy   : ndarray    – analytical TMM transmission coefficient
+        E_eV_plot  : ndarray   – energy axis (eV), propagating modes only
+        T          : ndarray   – FDTD transmission coefficient
+        T_analy    : ndarray   – analytical TMM transmission coefficient
         cfg                    – SimulationConfig of the barrier run
         sigma_E_eV : float     – 1-sigma energy width of the wavepacket (eV)
-        E_center_eV : float    – total energy of the wavepacket (eV)
+        E_center_eV: float     – total energy of the wavepacket (eV)
         """
-        cfg = results_barrier["config"]
+        cfg      = results_barrier["config"]
+        cfg_free = results_free["config"]
+
         psi_t_bar  = results_barrier["time_signal_R"] + 1j * results_barrier["time_signal_I"]
         psi_t_free = results_free["time_signal_R"]   + 1j * results_free["time_signal_I"]
 
-        N_pad    = cfg.nt * 8
-        fft_bar  = fft(psi_t_bar,  n=N_pad)
-        fft_free = fft(psi_t_free, n=N_pad)
-        freqs    = fftfreq(N_pad, cfg.dt)
-        E_all    = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
+        N_pad  = cfg.nt * 8
+        freqs  = fftfreq(N_pad, cfg.dt)
+        E_all  = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
 
-        pos_mask  = E_all > 0
-        E_eV      = E_all[pos_mask]
-        Psi_bar   = fft_bar[pos_mask]
-        Psi_free  = fft_free[pos_mask]
+        Psi_bar  = fft(psi_t_bar,  n=N_pad)
+        Psi_free = fft(psi_t_free, n=N_pad)
+
+        pos_mask = E_all > 0
+        E_eV     = E_all[pos_mask]
+        E_J      = E_eV * cfg.e
+        Psi_bar  = Psi_bar[pos_mask]
+        Psi_free = Psi_free[pos_mask]
 
         U_obs_bar  = cfg.U_R[results_barrier["record_ix"]]
-        U_obs_free = results_free["config"].U_R[results_free["record_ix"]]
-        E_J        = E_eV * cfg.e
-
+        U_obs_free = cfg_free.U_R[results_free["record_ix"]]
         valid_E    = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_eV_plot  = E_eV[valid_E]
 
+        # velocity correction: v ∝ k = √(2m*(E−U)) / ℏ  (ℏ cancels in the ratio)
         k_bar  = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
         k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
         T      = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
 
         T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
 
-        k_0         = cfg.k_x
-        sigma_k     = 1.0 / (2.0 * cfg.sigma_x)
-        sigma_E_eV  = ((cfg.hbar**2 * k_0 / cfg.m_star) * sigma_k) / cfg.e
+        sigma_E_eV  = ((cfg.hbar**2 * cfg.k_x / cfg.m_star) / (2.0 * cfg.sigma_x)) / cfg.e
         E_center_eV = cfg.total_E / cfg.e
 
         return E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV
@@ -363,6 +331,7 @@ class TransmissionAnalyzer:
         fig, ax = plt.subplots(figsize=(10, 5))
 
         E_mins, E_maxs = [], []
+        well_legend_added = True
 
         for idx, (label, res_bar, res_free) in enumerate(sweep):
             color = cmap(idx % 10)
@@ -378,6 +347,14 @@ class TransmissionAnalyzer:
 
             E_mins.append(E_center_eV - 3 * sigma_E_eV)
             E_maxs.append(E_center_eV + 3 * sigma_E_eV)
+
+            #finite well levels
+            levels = TransmissionAnalyzer._finite_well_levels(cfg, min(E_mins), max(E_maxs))
+            if len(levels) > 0:
+                if not well_legend_added:
+                    ax.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels')
+                    well_legend_added = True
+                ax.plot(levels, np.ones_like(levels) * 0.05, '|', color='b', markersize=10, alpha=0.7)
 
         # x-range covers the union of all wavepacket windows
         ax.set_xlim(min(E_mins), max(E_maxs))
