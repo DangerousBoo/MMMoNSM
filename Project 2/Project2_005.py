@@ -86,23 +86,25 @@ class SimulationConfig:
         self.nt      = int(np.ceil(self.T_total / self.dt))
         
         # Wavepacket: E_target is kinetic energy at injection (bias-independent, always > 0)
-        self.E_target = kwargs.get("E_target", 0.2) * self.e
-        self.sigma_x  = kwargs.get("sigma_x", 15e-9)
-        self.x_0      = self.x_abs1 + self.L_buffer * 0.3
-        i_x0          = int(self.x_0 / self.dx)
-        self.total_E  = self.E_target + self.U_R[i_x0]
-        self.k_x      = np.sqrt(2 * self.m_star * self.E_target) / self.hbar
+        self.E_target        = kwargs.get("E_target", 0.2) * self.e
+        self.sigma_x         = kwargs.get("sigma_x", 15e-9)
+        self.x_0             = self.x_abs1 + self.L_buffer * 0.3
+        i_x0                 = int(self.x_0 / self.dx)
+        self.total_E         = self.E_target + self.U_R[i_x0]
+        self.k_x             = np.sqrt(2 * self.m_star * self.E_target) / self.hbar
+        self.pml_wavelengths = kwargs.get("pml_wavelengths", 4)    # absorber length in λ_dB
+        self.pml_prefactor   = kwargs.get("pml_prefactor",   2.0)  # W_max = prefactor * E_target
 
         # Absorbers must be built after E_target is known so W_max scales correctly
         self._build_absorbers()
 
     def _build_absorbers(self):
         lambda_dB = 2 * np.pi / self.k_x
-        n_layer  = int(np.ceil(4 * lambda_dB / self.dx))
+        n_layer   = int(np.ceil(self.pml_wavelengths * lambda_dB / self.dx))
 
         i_arr = np.arange(n_layer)
         dist_factor = ((n_layer - i_arr) / n_layer) ** 4
-        W_max = 2.0 * self.E_target
+        W_max = self.pml_prefactor * self.E_target
         self.U_I[:n_layer]  = W_max * dist_factor
         self.U_I[-n_layer:] = W_max * dist_factor[::-1]
 
@@ -671,3 +673,22 @@ if __name__ == '__main__':
                  for E in [0.15, 0.25, 0.35, 0.45]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Probe Energy E_target")
 
+    # --- Sweep PML thickness (in de Broglie wavelengths) ---
+    sweep_pml_thickness = False
+    if sweep_pml_thickness:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    T_total=2000e-15, E_target=0.35, pml_prefactor=2.0)
+        sweep = [run_pair(f"{nw}λ PML", {**base, "pml_wavelengths": nw})
+                 for nw in [1, 2, 4]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Thickness (λ_dB)")
+
+    # --- Sweep PML prefactor (W_max = prefactor × E_target) ---
+    sweep_pml_prefactor = False
+    if sweep_pml_prefactor:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    T_total=2000e-15, E_target=0.35, pml_wavelengths=4)
+        sweep = [run_pair(f"{p}×E_t PML", {**base, "pml_prefactor": p})
+                 for p in [1, 2, 4]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Prefactor (W_max/E_target)")
