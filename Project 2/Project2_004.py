@@ -331,39 +331,40 @@ class TransmissionAnalyzer:
         fig, ax = plt.subplots(figsize=(10, 5))
 
         E_mins, E_maxs = [], []
-        well_legend_added = True
+        entries = []  # (color, label, cfg) stored for post-loop plotting
 
         for idx, (label, res_bar, res_free) in enumerate(sweep):
             color = cmap(idx % 10)
-            E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV = \
+            E_eV_plot, T, _, cfg, sigma_E_eV, E_center_eV = \
                 TransmissionAnalyzer.compute_T(res_bar, res_free)
 
-            ax.plot(E_eV_plot, T,
-                    color=color, lw=2, label=f"{label} (FDTD)")
-            if analytical:
-                # Dense analytical curve evaluated over the wavepacket window
-                E_min_i = E_center_eV - 3 * sigma_E_eV
-                E_max_i = E_center_eV + 3 * sigma_E_eV
-                E_dense = np.linspace(E_min_i, E_max_i, 2000)
-                T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
-                ax.plot(E_dense, T_dense,
-                        color=color, lw=1.2, ls='--', alpha=0.7,
-                        label=f"{label} (Analytical)")
-
+            ax.plot(E_eV_plot, T, color=color, lw=2, label=f"{label} (FDTD)")
             E_mins.append(E_center_eV - 3 * sigma_E_eV)
             E_maxs.append(E_center_eV + 3 * sigma_E_eV)
+            entries.append((color, label, cfg))
 
-            # Finite well levels
-            levels = TransmissionAnalyzer._finite_well_levels(cfg, min(E_mins), max(E_maxs))
-            if len(levels) > 0:
-                if not well_legend_added:
-                    ax.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels')
-                    well_legend_added = True
-                for E_level in levels:
-                    ax.axvline(E_level, color='b', linestyle='-.', lw=1.0, alpha=0.7)
+        # Full x-range known after loop — dense analytical spans beyond the window
+        # so any resonance near the boundary edge is fully resolved (matplotlib clips to xlim)
+        x_lo, x_hi = min(E_mins), max(E_maxs)
+        margin = (x_hi - x_lo) * 0.2
+        E_dense = np.linspace(x_lo - margin, x_hi + margin, 3000)
 
-        # x-range covers the union of all wavepacket windows
-        ax.set_xlim(min(E_mins), max(E_maxs))
+        if analytical:
+            for color, label, cfg in entries:
+                T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
+                ax.plot(E_dense, T_dense, color=color, lw=1.2, ls='--', alpha=0.7,
+                        label=f"{label} (Analytical)")
+
+        # Finite well levels — gray so they don't clash with any sweep color
+        well_legend_added = False
+        for _, _, cfg in entries:
+            levels = TransmissionAnalyzer._finite_well_levels(cfg, x_lo, x_hi)
+            for E_level in levels:
+                ax.axvline(E_level, color='gray', linestyle='-.', lw=1.0, alpha=0.8,
+                           label='Finite Well Levels' if not well_legend_added else '_nolegend_')
+                well_legend_added = True
+
+        ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(0, 1.1)
         ax.set_title(title)
         ax.set_xlabel("Energy (eV)")
