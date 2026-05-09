@@ -564,22 +564,72 @@ class IVCharacteristic:
         return total_current
 
     @staticmethod
-    def plot_IV(V_dc_arr, base_kwargs):
+    def compute_IV_curve(V_dc_arr, base_kwargs):
+        """
+        Compute I-V curve for a given parameter set.
         
-        
+        Parameters
+        ----------
+        V_dc_arr : array-like
+            Voltage values (in V) at which to compute current.
+        base_kwargs : dict
+            Simulation parameters.
+            
+        Returns
+        -------
+        currents : ndarray
+            Current values (in A) at each voltage.
+        """
         print(f"Executing {len(V_dc_arr)} barrier biases with optimized Landauer factorization...")
 
         func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs)
         
         with concurrent.futures.ProcessPoolExecutor() as executor:
             currents = list(tqdm(executor.map(func, V_dc_arr), total=len(V_dc_arr), desc="Extracting IV Curve"))
+        
+        return np.array(currents)
+
+    @staticmethod
+    def plot_IV(V_dc_arr, base_kwargs):
+        
+        currents = IVCharacteristic.compute_IV_curve(V_dc_arr, base_kwargs)
             
         plt.figure(figsize=(8, 5))
-        plt.semilogy(V_dc_arr * 1000, np.array(currents) * 1e6, 'r-o', lw=2)
+        plt.semilogy(V_dc_arr * 1000, currents * 1e6, 'r-o', lw=2)
         plt.title("Resonant Tunneling Diode I-V Characteristic")
         plt.xlabel("$V_{DC}$ (mV)")
         plt.ylabel("Current (µA)")
         plt.grid(True, which="both", ls="--")
+        plt.show()
+
+    @staticmethod
+    def plot_IV_sweep(voltages, sweep, title="IV Sweep"):
+        """
+        Overlay multiple I-V curves on a single figure.
+
+        Parameters
+        ----------
+        voltages : array-like
+            Voltage values (in V) at which I-V data was collected.
+        sweep : list of (label, currents)
+            Each entry is a tuple with a string label and a currents array (in A).
+        title : str
+            Figure title.
+        """
+        cmap = plt.get_cmap("tab10")
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        for idx, (label, currents) in enumerate(sweep):
+            color = cmap(idx % 10)
+            ax.semilogy(voltages * 1000, np.array(currents) * 1e6,
+                        color=color, lw=2, marker='o', label=label)
+
+        ax.set_title(title)
+        ax.set_xlabel("$V_{DC}$ (mV)")
+        ax.set_ylabel("Current (µA)")
+        ax.legend(fontsize=8)
+        ax.grid(True, which="both", ls="--")
+        plt.tight_layout()
         plt.show()
 
 if __name__ == '__main__':
@@ -634,17 +684,17 @@ if __name__ == '__main__':
     #     TransmissionAnalyzer.plot_transmission(results_barrier, results_free)
     #     SimulationRunner.plot_animation(results_barrier)
     
-    # # 2. Extract I-V Curve showing Negative Differential Resistance
-    # # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
-    # do_IV_curve = False
-    # if do_IV_curve:
-    #     voltages = np.linspace(0.1, 0.12, 50)
-    #     base_sim_kwargs = {
-    #         "V0": 0.6, "T_total": 1000.0e-15, 
-    #         "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
-    #         "frame_skip": 1000 # Only doing integration, not viewing animation
-    #     }
-    #     IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
+    # 2. Extract I-V Curve showing Negative Differential Resistance
+    # V_DC sweep from 0 to 100 mV (where NDR usually occurs for this well geometry)
+    do_IV_curve = False
+    if do_IV_curve:
+        voltages = np.linspace(0.1, 0.12, 50)
+        base_sim_kwargs = {
+            "V0": 0.6, "T_total": 1000.0e-15, 
+            "E_target": 0.022, # Centered near Fermi level (mu_L) to maximize resolution
+            "frame_skip": 1000 # Only doing integration, not viewing animation
+        }
+        IVCharacteristic.plot_IV(voltages, base_sim_kwargs)
         
     # do_IV_curve_3b = False
     # if do_IV_curve_3b:
@@ -677,17 +727,40 @@ if __name__ == '__main__':
         return (label, res_bar, res_free)
 
     # --- Sweep V0 (barrier height) ---
-    sweep_V0 = True
+    sweep_V0 = False
     if sweep_V0:
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
-                    T_total=2000e-15, E_target=0.35)
-        sweep = [run_pair(f"V0 = {v} eV", {**base, "V0": v})
-                 for v in [0.2, 0.4, 0.6]]
-        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Height V0")
+                    T_total=1000e-15, E_target=0.35)
+        sweep_transmission = [run_pair(f"V0 = {v} eV", {**base, "V0": v})
+                              for v in [0.2, 0.4, 0.6]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Barrier Height V0")
+        
+        iv_voltages = np.linspace(0.1, 0.12, 50)
+        sweep_IV = [
+            (f"V0 = {v} eV", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "V0": v, "E_target": 0.022}))
+            for v in [0.2, 0.4, 0.6]
+        ]
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Barrier Height V0")
+
+    sweep_T_total = True
+    if sweep_T_total:
+        base = dict(n_y=1, n_z=1, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    V0=0.6, E_target=0.35)
+        sweep_transmission = [run_pair(f"T_total = {v}", {**base, "T_total": v})
+                              for v in [500e-15, 1000e-15, 2000e-15, 3000e-15, 4000e-15]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Total Simulation Time T_total")
+        
+        iv_voltages = np.linspace(0.1, 0.12, 50)
+        sweep_IV = [
+            (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
+            for v in [500e-15, 1000e-15, 2000e-15, 3000e-15, 4000e-15]
+        ]
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
     # --- Sweep L_wells (well length) ---
-    sweep_well = True
+    sweep_well = False
     if sweep_well:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9],
@@ -697,7 +770,7 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Well Length")
 
     # --- Sweep L_barriers (barrier length, same for both barriers) ---
-    sweep_barrier = True
+    sweep_barrier = False
     if sweep_barrier:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_wells=[30e-9],
@@ -707,7 +780,7 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Length")
 
     # --- Sweep E_target (wavepacket centre energy) ---
-    sweep_Etarget = True
+    sweep_Etarget = False
     if sweep_Etarget:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
