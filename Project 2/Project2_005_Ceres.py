@@ -93,6 +93,19 @@ class SimulationConfig:
         self.total_E  = self.E_target + self.U_R[i_x0]
         self.k_x      = np.sqrt(2 * self.m_star * self.E_target) / self.hbar
 
+        # Absorbers must be built after E_target is known so W_max scales correctly
+        self._build_absorbers()
+
+    def _build_absorbers(self):
+        lambda_dB = 2 * np.pi / self.k_x
+        n_layer  = int(np.ceil(4 * lambda_dB / self.dx))
+
+        i_arr = np.arange(n_layer)
+        dist_factor = ((n_layer - i_arr) / n_layer) ** 4
+        W_max = 2.0 * self.E_target
+        self.U_I[:n_layer]  = W_max * dist_factor
+        self.U_I[-n_layer:] = W_max * dist_factor[::-1]
+
     def _build_potentials(self):
         def add_barrier_potential(x_start, x_end, V_0):
             i_start = int(np.round(x_start / self.dx))
@@ -113,11 +126,6 @@ class SimulationConfig:
             tilt = bias * (1.0 - (x_dev - self.x_bars[0]) / (self.x_buf2 - self.x_bars[0]))
             self.U_R[self.i_bars[0]:self.i_buf2] += tilt
             
-        i_arr = np.arange(self.n_layer)
-        dist_factor = ((self.n_layer - i_arr) / self.n_layer)**3
-        abs_V = np.max(self.V0_barriers) if np.any(self.V0_barriers != 0) else 0.2 * self.e
-        self.U_I[:self.n_layer] = 2.0 * abs_V * dist_factor
-        self.U_I[-self.n_layer:] = 2.0 * abs_V * dist_factor[::-1]
 
 class SchrodingerSolver:
     def __init__(self, cfg):
@@ -285,7 +293,7 @@ class TransmissionAnalyzer:
             DPsi = fft(res["dpsi_R"] + 1j * res["dpsi_I"], n=N_pad)
             return (c.hbar / c.m_star) * np.imag(np.conj(Psi) * DPsi)
 
-        N_pad = cfg.nt * 8
+        N_pad = cfg.nt * 1
         freqs = fftfreq(N_pad, cfg.dt)
         E_all = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
 
@@ -489,12 +497,17 @@ class IVCharacteristic:
 
         U_obs_bar  = cfg.U_R[res_b["record_ix"]]
         U_obs_free = res_f["config"].U_R[res_f["record_ix"]]
-                
-        valid = (E_J > U_obs_bar) & (E_J > U_obs_free)
+
+        # Only use bins where the free-space signal is above the noise floor.
+        # In the wavepacket wings J_free → 0; dividing by near-zero gives T >> 1
+        # and contaminates the Landauer integral — this gets WORSE with longer T_total
+        # because the FFT has more bins in the noisy wings.
+        spectral_mask = np.abs(j_xf) > 1e-3 * np.max(np.abs(j_xf))
+        valid = (E_J > U_obs_bar) & (E_J > U_obs_free) & spectral_mask
         E_J = E_J[valid]
-                
+
         T_E = np.abs(j_xb[valid]) / np.abs(j_xf[valid])
-        
+
         # Sort to ensure np.trapezoid integrates forward
         sort_idx = np.argsort(E_J)
         E_J = E_J[sort_idx]
@@ -566,19 +579,19 @@ class IVCharacteristic:
 if __name__ == '__main__':
 
     # --- Single T(E) spectrum ---
-    do_single = False
+    do_single = True
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=1000e-15, E_target=0.35, frame_skip=500)
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=3000e-15, E_target=0.35, frame_skip=500)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
         SimulationRunner.plot_animation(res_bar)
 
     # --- I-V curve (NDR) ---
-    do_IV_curve = False
+    do_IV_curve = True
     if do_IV_curve:
         voltages = np.linspace(0.1, 0.12, 50)
-        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 1000e-15, "E_target": 0.022})
+        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 5000e-15, "E_target": 0.02234})
 
     # =========================================================================
     # === PARAMETER SWEEPS ===
@@ -618,13 +631,13 @@ if __name__ == '__main__':
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     V0=0.6, E_target=0.35)
         sweep_transmission = [run_pair(f"T_total = {v}", {**base, "T_total": v})
-                              for v in [2000e-15,5000e-15,10000e-15]]
+                              for v in [500e-15,1000e-15,2000e-15,5000e-15]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Total Simulation Time T_total")
         
         iv_voltages = np.linspace(0.1, 0.12, 50)
         sweep_IV = [
             (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
-            for v in [2000e-15,5000e-15,10000e-15]
+            for v in [500e-15,1000e-15,2000e-15,5000e-15]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
