@@ -331,39 +331,39 @@ class TransmissionAnalyzer:
         fig, ax = plt.subplots(figsize=(10, 5))
 
         E_mins, E_maxs = [], []
-        well_legend_added = True
+        entries = []  # (color, label, cfg) stored for post-loop plotting
 
         for idx, (label, res_bar, res_free) in enumerate(sweep):
             color = cmap(idx % 10)
-            E_eV_plot, T, T_analy, cfg, sigma_E_eV, E_center_eV = \
+            E_eV_plot, T, _, cfg, sigma_E_eV, E_center_eV = \
                 TransmissionAnalyzer.compute_T(res_bar, res_free)
 
-            ax.plot(E_eV_plot, T,
-                    color=color, lw=2, label=f"{label} (FDTD)")
-            if analytical:
-                # Dense analytical curve evaluated over the wavepacket window
-                E_min_i = E_center_eV - 3 * sigma_E_eV
-                E_max_i = E_center_eV + 3 * sigma_E_eV
-                E_dense = np.linspace(E_min_i, E_max_i, 2000)
-                T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
-                ax.plot(E_dense, T_dense,
-                        color=color, lw=1.2, ls='--', alpha=0.7,
-                        label=f"{label} (Analytical)")
-
+            ax.plot(E_eV_plot, T, color=color, lw=2, label=f"{label} (FDTD)")
             E_mins.append(E_center_eV - 3 * sigma_E_eV)
             E_maxs.append(E_center_eV + 3 * sigma_E_eV)
+            entries.append((color, label, cfg))
 
-            # Finite well levels
-            levels = TransmissionAnalyzer._finite_well_levels(cfg, min(E_mins), max(E_maxs))
-            if len(levels) > 0:
-                if not well_legend_added:
-                    ax.plot([], [], color='b', linestyle='-.', alpha=0.7, label='Finite Well Levels')
-                    well_legend_added = True
-                for E_level in levels:
-                    ax.axvline(E_level, color='b', linestyle='-.', lw=1.0, alpha=0.7)
+        # Full x-range known after loop — dense analytical spans beyond the window
+        x_lo, x_hi = min(E_mins), max(E_maxs)
+        margin = (x_hi - x_lo) * 0.2
+        E_dense = np.linspace(x_lo - margin, x_hi + margin, 3000)
 
-        # x-range covers the union of all wavepacket windows
-        ax.set_xlim(min(E_mins), max(E_maxs))
+        if analytical:
+            for color, label, cfg in entries:
+                T_dense = TransmissionAnalyzer.get_analytical_T(E_dense, cfg)
+                ax.plot(E_dense, T_dense, color=color, lw=1.2, ls='--', alpha=0.7,
+                        label=f"{label} (Analytical)")
+
+        # Finite well levels — gray so they don't clash with any sweep color
+        well_legend_added = False
+        for _, _, cfg in entries:
+            levels = TransmissionAnalyzer._finite_well_levels(cfg, x_lo, x_hi)
+            for E_level in levels:
+                ax.axvline(E_level, color='gray', linestyle='-.', lw=1.0, alpha=0.8,
+                           label='Finite Well Levels' if not well_legend_added else '_nolegend_')
+                well_legend_added = True
+
+        ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(0, 1.1)
         ax.set_title(title)
         ax.set_xlabel("Energy (eV)")
@@ -569,7 +569,7 @@ if __name__ == '__main__':
     # --- Single T(E) spectrum ---
     do_single = False
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.0, V_DC=-0.5, T_total=200e-15, E_target=0.35, frame_skip=10)
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=1000e-15, E_target=0.35, frame_skip=500)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
@@ -613,8 +613,7 @@ if __name__ == '__main__':
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Barrier Height V0")
 
-    # --- Sweep T_total (total simulation time) ---
-    sweep_T_total = False
+    sweep_T_total = True
     if sweep_T_total:
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
@@ -660,18 +659,3 @@ if __name__ == '__main__':
                  for E in [0.15, 0.25, 0.35, 0.45]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Probe Energy E_target")
 
-    sweep_dx = True
-    if sweep_dx:
-        base = dict(n_y=1, n_z=1, V_DC=0.0,
-                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
-                    V0=0.6, E_target=0.35, T_total=1000e-15)
-        sweep_transmission = [run_pair(f"dx = {v}", {**base, "dx": v})
-                              for v in [0.2e-9, 0.5e-9, 1e-9, 2e-9]]
-        TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: dx")
-        
-        iv_voltages = np.linspace(0.1, 0.12, 50)
-        sweep_IV = [
-            (f"dx = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "dx": v, "E_target": 0.022}))
-            for v in [0.2e-9, 0.5e-9, 1e-9, 2e-9]
-        ]
-        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: dx")
