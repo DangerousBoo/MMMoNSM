@@ -292,31 +292,35 @@ class TransmissionAnalyzer:
         cfg      = results_barrier["config"]
         cfg_free = results_free["config"]
 
-        psi_t_bar  = results_barrier["time_signal_R"] + 1j * results_barrier["time_signal_I"]
-        psi_t_free = results_free["time_signal_R"]   + 1j * results_free["time_signal_I"]
-
+        diffpsi_R_bar        = (results_barrier["time_signal_R_R"] - results_barrier["time_signal_R_L"]) / (2 * cfg.dx)
+        diffpsi_I_bar        = (results_barrier["time_signal_I_R"] - results_barrier["time_signal_I_L"]) / (2 * cfg.dx)
+        psi_R_bar, psi_I_bar = results_barrier["time_signal_R"], results_barrier["time_signal_I"]
+        jx_bar_t = cfg.e * cfg.hbar / cfg.m_star * (psi_R_bar * diffpsi_I_bar - psi_I_bar * diffpsi_R_bar)
+        
+        diffpsi_R_free         = (results_free["time_signal_R_R"] - results_free["time_signal_R_L"]) / (2 * cfg_free.dx)
+        diffpsi_I_free         = (results_free["time_signal_I_R"] - results_free["time_signal_I_L"]) / (2 * cfg_free.dx)
+        psi_R_free, psi_I_free = results_free["time_signal_R"], results_free["time_signal_I"]
+        jx_free_t = cfg_free.e * cfg_free.hbar / cfg_free.m_star * (psi_R_free * diffpsi_I_free - psi_I_free * diffpsi_R_free)
+        
         N_pad  = cfg.nt * 8
         freqs  = fftfreq(N_pad, cfg.dt)
         E_all  = -(2 * np.pi * cfg.hbar * freqs) / cfg.e
 
-        Psi_bar  = fft(psi_t_bar,  n=N_pad)
-        Psi_free = fft(psi_t_free, n=N_pad)
+        jx_bar  = fft(jx_bar_t,  n=N_pad)
+        jx_free = fft(jx_free_t, n=N_pad)
 
         pos_mask = E_all > 0
         E_eV     = E_all[pos_mask]
         E_J      = E_eV * cfg.e
-        Psi_bar  = Psi_bar[pos_mask]
-        Psi_free = Psi_free[pos_mask]
+        jx_bar  = jx_bar[pos_mask]
+        jx_free = jx_free[pos_mask]
 
         U_obs_bar  = cfg.U_R[results_barrier["record_ix"]]
         U_obs_free = cfg_free.U_R[results_free["record_ix"]]
         valid_E    = (E_J > U_obs_bar) & (E_J > U_obs_free)
         E_eV_plot  = E_eV[valid_E]
 
-        # velocity correction: v ∝ k = √(2m*(E−U)) / ℏ  (ℏ cancels in the ratio)
-        k_bar  = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_bar))
-        k_free = np.sqrt(2 * cfg.m_star * (E_J[valid_E] - U_obs_free))
-        T      = (k_bar / k_free) * (np.abs(Psi_bar[valid_E])**2 / np.abs(Psi_free[valid_E])**2)
+        T      = np.abs(jx_bar[valid_E] / jx_free[valid_E])
 
         T_analy = TransmissionAnalyzer.get_analytical_T(E_eV_plot, cfg)
 
@@ -382,14 +386,17 @@ class SimulationRunner:
         n_frames = int(np.ceil(cfg.nt / frame_skip)) if record_history else 0
         history = np.zeros((n_frames, cfg.nx), dtype=np.float32) if record_history else None
         record_ix = record_ix or int(cfg.x_buf2 / cfg.dx) + int(20e-9 / cfg.dx)
-            
+
         rec_R, rec_I = np.zeros(cfg.nt), np.zeros(cfg.nt)
+        rec_R_L, rec_I_L = np.zeros(cfg.nt), np.zeros(cfg.nt)
+        rec_R_R, rec_I_R = np.zeros(cfg.nt), np.zeros(cfg.nt)
         frame_idx = 0
         
         for it in tqdm(range(cfg.nt), desc=f"Simulating (nt={cfg.nt})", disable=disable_tqdm):
             solver.step()
             rec_R[it], rec_I[it] = solver.psi_R[record_ix], solver.psi_I[record_ix]
-            
+            rec_R_L[it], rec_I_L[it] = solver.psi_R[record_ix - 1], solver.psi_I[record_ix - 1]
+            rec_R_R[it], rec_I_R[it] = solver.psi_R[record_ix + 1], solver.psi_I[record_ix + 1]
             if record_history and not it % frame_skip and frame_idx < n_frames:
                 history[frame_idx] = solver.density
                 frame_idx += 1
@@ -400,7 +407,11 @@ class SimulationRunner:
             "frame_skip": frame_skip,
             "record_ix": record_ix,
             "time_signal_R": rec_R,
-            "time_signal_I": rec_I
+            "time_signal_I": rec_I,
+            "time_signal_R_L": rec_R_L,
+            "time_signal_I_L": rec_I_L,
+            "time_signal_R_R": rec_R_R,
+            "time_signal_I_R": rec_I_R
         }
         
     @staticmethod
@@ -622,12 +633,12 @@ if __name__ == '__main__':
                               for v in [500e-15, 1000e-15, 2000e-15, 3000e-15, 4000e-15]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Total Simulation Time T_total")
         
-        iv_voltages = np.linspace(0.1, 0.12, 50)
-        sweep_IV = [
-            (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
-            for v in [500e-15, 1000e-15, 2000e-15]
-        ]
-        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
+        # iv_voltages = np.linspace(0.1, 0.12, 50)
+        # sweep_IV = [
+        #     (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
+        #     for v in [500e-15, 1000e-15, 2000e-15]
+        # ]
+        # IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
     # --- Sweep L_wells (well length) ---
     sweep_well = False
