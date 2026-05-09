@@ -359,19 +359,6 @@ class TransmissionAnalyzer:
 
     @staticmethod
     def plot_transmission_sweep(sweep, title="Transmission Sweep", analytical=True):
-        """
-        Overlay multiple T(E) curves on a single figure.
-
-        Parameters
-        ----------
-        sweep : list of (label, results_barrier, results_free)
-            Each entry is a tuple produced by run_pair() – a string label plus
-            the two result dicts from SimulationRunner.execute().
-        title : str
-            Figure title.
-        analytical : bool
-            Whether to also draw the analytical TMM curves (dashed, same colour).
-        """
         cmap = plt.get_cmap("tab10")
         fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -515,9 +502,7 @@ class IVCharacteristic:
         psi_bar_R, psi_bar_I = res_b["time_signal_R"] , res_b["time_signal_I"]
         j_x_bar = (e * cfg.hbar / cfg.m_star) * (psi_bar_R * np.gradient(psi_bar_I, cfg.dx) - psi_bar_I * np.gradient(psi_bar_R, cfg.dx))
 
-        # Use 16x padding for incredibly smooth energy resolution to catch the sharp peak
-        # Both FFTs must share the same N_pad so pos_mask indices are consistent
-        N_pad = cfg.nt * 16
+        N_pad = cfg.nt * 6
         fft_free = fft(j_x_free, n=N_pad)
         fft_bar = fft(j_x_bar, n=N_pad)
         freqs = fftfreq(N_pad, cfg.dt)
@@ -565,21 +550,6 @@ class IVCharacteristic:
 
     @staticmethod
     def compute_IV_curve(V_dc_arr, base_kwargs):
-        """
-        Compute I-V curve for a given parameter set.
-        
-        Parameters
-        ----------
-        V_dc_arr : array-like
-            Voltage values (in V) at which to compute current.
-        base_kwargs : dict
-            Simulation parameters.
-            
-        Returns
-        -------
-        currents : ndarray
-            Current values (in A) at each voltage.
-        """
         print(f"Executing {len(V_dc_arr)} barrier biases with optimized Landauer factorization...")
 
         func = partial(IVCharacteristic._run_bias, base_kwargs=base_kwargs)
@@ -604,18 +574,6 @@ class IVCharacteristic:
 
     @staticmethod
     def plot_IV_sweep(voltages, sweep, title="IV Sweep"):
-        """
-        Overlay multiple I-V curves on a single figure.
-
-        Parameters
-        ----------
-        voltages : array-like
-            Voltage values (in V) at which I-V data was collected.
-        sweep : list of (label, currents)
-            Each entry is a tuple with a string label and a currents array (in A).
-        title : str
-            Figure title.
-        """
         cmap = plt.get_cmap("tab10")
         fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -710,9 +668,6 @@ if __name__ == '__main__':
 
     # =========================================================================
     # === PARAMETER SWEEPS — overlay multiple T(E) curves on one figure ===
-    # Flip any variable below to True to run that sweep.
-    # Each sweep runs a barrier + free-space pair for every parameter value,
-    # then overlays all T(E) curves (FDTD solid, Analytical dashed) on one plot.
     # =========================================================================
 
     def run_pair(label, shared_kwargs, frame_skip=500, animate=False):
@@ -755,7 +710,7 @@ if __name__ == '__main__':
         iv_voltages = np.linspace(0.1, 0.12, 50)
         sweep_IV = [
             (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
-            for v in [500e-15, 1000e-15, 2000e-15, 3000e-15, 4000e-15]
+            for v in [500e-15, 1000e-15, 2000e-15]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
