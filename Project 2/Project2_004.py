@@ -569,7 +569,7 @@ if __name__ == '__main__':
     # --- Single T(E) spectrum ---
     do_single = False
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=1000e-15, E_target=0.35, frame_skip=500)
+        kw = dict(n_y=1, n_z=1, V0=0.0, V_DC=-0.5, T_total=200e-15, E_target=0.35, frame_skip=10)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
@@ -613,7 +613,8 @@ if __name__ == '__main__':
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Barrier Height V0")
 
-    sweep_T_total = True
+    # --- Sweep T_total (total simulation time) ---
+    sweep_T_total = False
     if sweep_T_total:
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
@@ -659,3 +660,18 @@ if __name__ == '__main__':
                  for E in [0.15, 0.25, 0.35, 0.45]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Probe Energy E_target")
 
+    sweep_dx = True
+    if sweep_dx:
+        base = dict(n_y=1, n_z=1, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    V0=0.6, E_target=0.35, T_total=1000e-15)
+        sweep_transmission = [run_pair(f"dx = {v}", {**base, "dx": v})
+                              for v in [0.2e-9, 0.5e-9, 1e-9, 2e-9]]
+        TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: dx")
+        
+        iv_voltages = np.linspace(0.1, 0.12, 50)
+        sweep_IV = [
+            (f"dx = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "dx": v, "E_target": 0.022}))
+            for v in [0.2e-9, 0.5e-9, 1e-9, 2e-9]
+        ]
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: dx")
