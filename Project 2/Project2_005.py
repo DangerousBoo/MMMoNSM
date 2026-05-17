@@ -253,7 +253,7 @@ class TransmissionAnalyzer:
         E_max = E_center_eV + 3 * sigma_E_eV
         finite_well_res = TransmissionAnalyzer._finite_well_levels(cfg, 0, E_eV_plot.max())
 
-        plt.figure(figsize=(8, 4))
+        plt.figure(figsize=(8, 4),dpi=150)
         plt.plot(E_eV_plot, T, 'm-', lw=2, label="FDTD Simulation")
 
         # Dense analytical curve so narrow resonance peaks are smooth
@@ -581,9 +581,9 @@ class IVCharacteristic:
 if __name__ == '__main__':
 
     # --- Single T(E) spectrum ---
-    do_single = True
+    do_single = False
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=3000e-15, E_target=0.35, frame_skip=500)
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=10000e-15, E_target=0.55, frame_skip=500)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
@@ -592,8 +592,8 @@ if __name__ == '__main__':
     # --- I-V curve (NDR) ---
     do_IV_curve = False
     if do_IV_curve:
-        voltages = np.linspace(0.1, 0.12, 50)
-        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 5000e-15, "E_target": 0.02234})
+        voltages = np.linspace(0.1, 0.13, 100)
+        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 10e-12, "E_target": 0.02234})
 
     # =========================================================================
     # === PARAMETER SWEEPS ===
@@ -615,19 +615,19 @@ if __name__ == '__main__':
     if sweep_V0:
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
-                    T_total=1000e-15, E_target=0.35)
+                    T_total=5000e-15, E_target=0.35)
         sweep_transmission = [run_pair(f"V0 = {v} eV", {**base, "V0": v})
                               for v in [0.2, 0.4, 0.6]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep_transmission, title="Sweep: Barrier Height V0")
         
-        iv_voltages = np.linspace(0.1, 0.12, 50)
+        iv_voltages = np.linspace(0.08, 0.13, 100)
         sweep_IV = [
-            (f"V0 = {v} eV", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "V0": v, "E_target": 0.022}))
+            (f"V0 = {v} eV", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "V0": v, "E_target": 0.02234}))
             for v in [0.2, 0.4, 0.6]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Barrier Height V0")
 
-    sweep_T_total = True
+    sweep_T_total = False
     if sweep_T_total:
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
@@ -638,7 +638,7 @@ if __name__ == '__main__':
         
         iv_voltages = np.linspace(0.11, 0.13, 50)
         sweep_IV = [
-            (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.022}))
+            (f"T_total = {v}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "T_total": v, "E_target": 0.02234}))
             for v in [500e-15,1000e-15,2000e-15]
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
@@ -648,18 +648,24 @@ if __name__ == '__main__':
     if sweep_well:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9],
-                    T_total=2000e-15, E_target=0.35)
-        sweep = [run_pair(f"Lw = {int(Lw*1e9)} nm", {**base, "L_wells": [Lw]})
-                 for Lw in [15e-9, 30e-9, 50e-9]]
-        TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Well Length")
+                    T_total=5000e-15, E_target=0.35)
+        # sweep = [run_pair(f"Lw = {int(Lw*1e9)} nm", {**base, "L_wells": [Lw], "E_target": 0.02234})
+                #  for Lw in [15e-9, 30e-9, 45e-9]]
+        # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Well Length")
+        iv_voltages = np.linspace(0.07, 0.15, 100)
+        sweep_IV = [
+            (f"Lw = {int(Lw*1e9)} nm", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "L_wells": [Lw], "E_target": 0.02234}))
+            for Lw in [15e-9, 30e-9, 45e-9]
+        ]
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Well Length")
 
     # --- Sweep L_barriers (barrier length, same for both barriers) ---
     sweep_barrier = False
     if sweep_barrier:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_wells=[30e-9],
-                    T_total=2000e-15, E_target=0.35)
-        sweep = [run_pair(f"Lb = {int(Lb*1e9)} nm", {**base, "L_barriers": [Lb, Lb]})
+                    T_total=5000e-15, E_target=0.35)
+        sweep = [run_pair(f"Lb = {int(Lb*1e9)} nm", {**base, "L_barriers": [Lb, Lb], "E_target": 0.02234})
                  for Lb in [5e-9, 10e-9, 20e-9]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Length")
 
@@ -692,3 +698,18 @@ if __name__ == '__main__':
         sweep = [run_pair(f"{p}×E_t PML", {**base, "pml_prefactor": p})
                  for p in [1, 2, 4]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Prefactor (W_max/E_target)")
+        
+    sweep_three_barriers = True
+    if sweep_three_barriers:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9, 10e-9],
+                    T_total=10000e-15, E_target=0.35)
+        # sweep = [run_pair(f"3 Barriers Structures", {**base, "L_wells": Lw})
+        #          for Lw in [[10e-9,20e-9], [15e-9,15e-9], [20e-9,10e-9]]]
+        # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Three Barrier Structure")
+        iv_voltages = np.linspace(0.01, 2, 20)
+        sweep_IV = [
+            (f"3 Barriers, Lw={int(Lw[0]*1e9)}/{int(Lw[1]*1e9)} nm", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "L_wells": Lw, "E_target": 0.02234}))
+            for Lw in [[10e-9,20e-9], [15e-9,15e-9], [20e-9,10e-9]]
+        ]
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Three Barrier Structure")    
