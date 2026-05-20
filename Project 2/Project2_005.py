@@ -599,6 +599,7 @@ if __name__ == '__main__':
         ("Sweep: Probe energy E_target",            "sweep_Etarget"),
         ("Sweep: PML thickness",                    "sweep_pml_thickness"),
         ("Sweep: PML prefactor",                    "sweep_pml_prefactor"),
+        ("Sweep: Noise amplitude",                  "sweep_noise"),
         ("Sweep: Three-barrier structure (IV)",     "sweep_three_barriers"),
     ]
 
@@ -747,9 +748,8 @@ if __name__ == '__main__':
         sweep = [run_pair(f"{p}×E_t PML", {**base, "pml_prefactor": p})
                  for p in [1, 2, 4]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Prefactor (W_max/E_target)")
-        
-    sweep_noise = False
-    if sweep_noise:
+
+    if "sweep_noise" in _selected:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     T_total=5000e-15, E_target=0.35)
