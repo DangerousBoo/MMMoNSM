@@ -589,36 +589,67 @@ class IVCharacteristic:
 
 if __name__ == '__main__':
 
+    ANALYSES = [
+        ("Single T(E) spectrum",                    "single"),
+        ("I-V curve (NDR)",                         "iv_curve"),
+        ("Sweep: Barrier height V0",                "sweep_V0"),
+        ("Sweep: Total simulation time T_total",    "sweep_T_total"),
+        ("Sweep: Well length L_wells",              "sweep_well"),
+        ("Sweep: Barrier length L_barriers",        "sweep_barrier"),
+        ("Sweep: Probe energy E_target",            "sweep_Etarget"),
+        ("Sweep: PML thickness",                    "sweep_pml_thickness"),
+        ("Sweep: PML prefactor",                    "sweep_pml_prefactor"),
+        ("Sweep: Three-barrier structure (IV)",     "sweep_three_barriers"),
+    ]
+
+    print("\nAvailable analyses:")
+    for i, (name, _) in enumerate(ANALYSES, 1):
+        print(f"  {i:2d}. {name}")
+    print("\nEnter numbers separated by commas, or 'all' to run everything.")
+    _raw = input("Selection: ").strip()
+
+    if _raw.lower() == "all":
+        _selected = {key for _, key in ANALYSES}
+    else:
+        _selected = set()
+        for _token in _raw.split(","):
+            try:
+                _idx = int(_token.strip()) - 1
+                if 0 <= _idx < len(ANALYSES):
+                    _selected.add(ANALYSES[_idx][1])
+            except ValueError:
+                pass
+
+    def _ask_float(prompt, default):
+        try:
+            return float(input(prompt).strip())
+        except (ValueError, EOFError):
+            print(f"  Invalid input, using default {default}.")
+            return default
+
     # --- Single T(E) spectrum ---
-    do_single = False
-    if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=30e-15, E_target=0.55, frame_skip=50, noise=0.005)
+    if "single" in _selected:
+        print("\n--- Running: Single T(E) Spectrum ---")
+        V0_single  = _ask_float("  Barrier height V0 [eV] (default 0.6): ", default=0.6)
+        V_DC_single = _ask_float("  Bias voltage V_DC [V] (default 0.0): ", default=0.0)
+        kw = dict(n_y=1, n_z=1, V0=V0_single, V_DC=V_DC_single, T_total=10000e-15, E_target=0.55, frame_skip=500)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
         SimulationRunner.plot_animation(res_bar)
 
     # --- I-V curve (NDR) ---
-    do_IV_curve = False
-    if do_IV_curve:
+    if "iv_curve" in _selected:
+        print("\n--- Running: I-V Curve (NDR) ---")
+        V0_iv = _ask_float("  Barrier height V0 [eV] (default 0.6): ", default=0.6)
         voltages = np.linspace(0.1, 0.13, 100)
-        IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 10e-12, "E_target": 0.02234})
-        
-    # --- Single Three barrier design ---
-    do_single_3b = False
-    if do_single_3b:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=20000e-15, E_target=0.55, frame_skip=500, L_barriers=[10e-9, 10e-9, 10e-9], L_wells=[30e-9, 30e-9])
-        res_bar  = SimulationRunner.execute(**kw)
-        res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
-        TransmissionAnalyzer.plot_transmission(res_bar, res_free)
-        SimulationRunner.plot_animation(res_bar)
+        IVCharacteristic.plot_IV(voltages, {"V0": V0_iv, "T_total": 10e-12, "E_target": 0.02234})
 
     # =========================================================================
     # === PARAMETER SWEEPS ===
     # =========================================================================
 
     def run_pair(label, shared_kwargs, frame_skip=500, animate=False):
-        """Run barrier + free-space pair and return (label, res_bar, res_free)."""
         res_bar  = SimulationRunner.execute(**shared_kwargs, frame_skip=frame_skip)
         res_free = SimulationRunner.execute(
             **{**shared_kwargs, "V0": 0.0, "V_DC": 0.0},
@@ -629,8 +660,8 @@ if __name__ == '__main__':
         return (label, res_bar, res_free)
 
     # --- Sweep V0 (barrier height) ---
-    sweep_V0 = False
-    if sweep_V0:
+    if "sweep_V0" in _selected:
+        print("\n--- Running: Sweep Barrier Height V0 ---")
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     T_total=5000e-15, E_target=0.35)
@@ -645,8 +676,8 @@ if __name__ == '__main__':
         ]
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Barrier Height V0")
 
-    sweep_T_total = False
-    if sweep_T_total:
+    if "sweep_T_total" in _selected:
+        print("\n--- Running: Sweep Total Simulation Time T_total ---")
         base = dict(n_y=1, n_z=1, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     V0=0.6, E_target=0.35)
@@ -662,8 +693,8 @@ if __name__ == '__main__':
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Total Simulation Time T_total")
 
     # --- Sweep L_wells (well length) ---
-    sweep_well = False
-    if sweep_well:
+    if "sweep_well" in _selected:
+        print("\n--- Running: Sweep Well Length L_wells ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9],
                     T_total=5000e-15, E_target=0.35)
@@ -678,8 +709,8 @@ if __name__ == '__main__':
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Well Length")
 
     # --- Sweep L_barriers (barrier length, same for both barriers) ---
-    sweep_barrier = False
-    if sweep_barrier:
+    if "sweep_barrier" in _selected:
+        print("\n--- Running: Sweep Barrier Length L_barriers ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_wells=[30e-9],
                     T_total=5000e-15, E_target=0.35)
@@ -688,8 +719,8 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Barrier Length")
 
     # --- Sweep E_target (wavepacket centre energy) ---
-    sweep_Etarget = False
-    if sweep_Etarget:
+    if "sweep_Etarget" in _selected:
+        print("\n--- Running: Sweep wavepacket energy E_target ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     T_total=2000e-15)
@@ -698,8 +729,8 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Probe Energy E_target")
 
     # --- Sweep PML thickness (in de Broglie wavelengths) ---
-    sweep_pml_thickness = False
-    if sweep_pml_thickness:
+    if "sweep_pml_thickness" in _selected:
+        print("\n--- Running: Sweep PML Thickness ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     T_total=2000e-15, E_target=0.35, pml_prefactor=2.0)
@@ -708,8 +739,8 @@ if __name__ == '__main__':
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Thickness (λ_dB)")
 
     # --- Sweep PML prefactor (W_max = prefactor × E_target) ---
-    sweep_pml_prefactor = False
-    if sweep_pml_prefactor:
+    if "sweep_pml_prefactor" in _selected:
+        print("\n--- Running: Sweep PML Prefactor ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
                     T_total=2000e-15, E_target=0.35, pml_wavelengths=4)
@@ -732,8 +763,8 @@ if __name__ == '__main__':
         ]    
         IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Noise Amplitude")  
         
-    sweep_three_barriers = True
-    if sweep_three_barriers:
+    if "sweep_three_barriers" in _selected:
+        print("\n--- Running: Sweep Three-Barrier Structure (IV) ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9, 10e-9],
                     T_total=20000e-15, E_target=0.35)
