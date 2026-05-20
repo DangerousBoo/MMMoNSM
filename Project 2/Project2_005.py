@@ -29,6 +29,8 @@ class SimulationConfig:
         self.nx = int(np.ceil(self.L_total / self.dx))
         self.x  = np.linspace(0, self.L_total, self.nx)
         
+        self.noise = kwargs.get("noise", False)
+        
         # Define layer boundaries
         self.x_abs1 = self.L_absorb
         
@@ -114,6 +116,11 @@ class SimulationConfig:
             i_end = int(np.round(x_end / self.dx))
             self.U_R[i_start:i_end] += V_0
 
+        if self.noise:
+                np.random.seed(42) # according to the Hitchiker's Guide to the Galaxy, the best seed is 42
+                noise = self.noise * self.V0_barriers.max() * (2 * np.random.randn(self.nx - 2 * self.n_layer) - 1)
+                self.U_R[self.n_layer:-self.n_layer] += noise
+
         # Make the barriers
         for i in range(len(self.L_barriers)):
             add_barrier_potential(self.x_bars[i], self.x_bars[i] + self.L_barriers[i], self.V0_barriers[i])
@@ -127,6 +134,8 @@ class SimulationConfig:
             x_dev = self.x[self.i_bars[0]:self.i_buf2]
             tilt = bias * (1.0 - (x_dev - self.x_bars[0]) / (self.x_buf2 - self.x_bars[0]))
             self.U_R[self.i_bars[0]:self.i_buf2] += tilt
+            
+            
             
 
 class SchrodingerSolver:
@@ -583,7 +592,7 @@ if __name__ == '__main__':
     # --- Single T(E) spectrum ---
     do_single = False
     if do_single:
-        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=10000e-15, E_target=0.55, frame_skip=500)
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=30e-15, E_target=0.55, frame_skip=50, noise=0.005)
         res_bar  = SimulationRunner.execute(**kw)
         res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
         TransmissionAnalyzer.plot_transmission(res_bar, res_free)
@@ -594,6 +603,15 @@ if __name__ == '__main__':
     if do_IV_curve:
         voltages = np.linspace(0.1, 0.13, 100)
         IVCharacteristic.plot_IV(voltages, {"V0": 0.6, "T_total": 10e-12, "E_target": 0.02234})
+        
+    # --- Single Three barrier design ---
+    do_single_3b = False
+    if do_single_3b:
+        kw = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0, T_total=20000e-15, E_target=0.55, frame_skip=500, L_barriers=[10e-9, 10e-9, 10e-9], L_wells=[30e-9, 30e-9])
+        res_bar  = SimulationRunner.execute(**kw)
+        res_free = SimulationRunner.execute(**{**kw, 'V0': 0.0}, dt=res_bar['config'].dt)
+        TransmissionAnalyzer.plot_transmission(res_bar, res_free)
+        SimulationRunner.plot_animation(res_bar)
 
     # =========================================================================
     # === PARAMETER SWEEPS ===
@@ -699,17 +717,37 @@ if __name__ == '__main__':
                  for p in [1, 2, 4]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Prefactor (W_max/E_target)")
         
+    sweep_noise = False
+    if sweep_noise:
+        base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
+                    L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
+                    T_total=5000e-15, E_target=0.35)
+        # sweep = [run_pair(f"Noise = {v*100:.0f}%", {**base, "noise": v})
+        #          for v in [0.0, 0.01, 0.02]]
+        # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Noise Amplitude")
+        iv_voltages = np.linspace(0.09, 0.125, 50)
+        sweep_IV = [
+            (f"Noise = {v*0.6*1000:.1f} meV", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "noise": v, "E_target": 0.02234}))
+            for v in [0.0, 0.005, 0.01]
+        ]    
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Noise Amplitude")  
+        
     sweep_three_barriers = True
     if sweep_three_barriers:
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9, 10e-9],
-                    T_total=10000e-15, E_target=0.35)
-        # sweep = [run_pair(f"3 Barriers Structures", {**base, "L_wells": Lw})
-        #          for Lw in [[10e-9,20e-9], [15e-9,15e-9], [20e-9,10e-9]]]
-        # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Three Barrier Structure")
-        iv_voltages = np.linspace(0.01, 2, 20)
+                    T_total=20000e-15, E_target=0.35)
+        
+        L_barriers = [[10e-9, 10e-9], [10e-9, 10e-9, 10e-9]]
+        L_wells = [[30e-9], [30e-9, 30e-9]]
+        labels = ["2 Barriers", "3 Barriers"]
+        
+        # sweep = [run_pair(f"Multiple Barrier Structures", {**base, "L_wells": L_wells[i], "L_barriers": L_barriers[i]})
+        #          for i in range(len(L_barriers))]
+        # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Multiple Barrier Structure")
+        iv_voltages = np.linspace(0.6, 1.1, 50)
         sweep_IV = [
-            (f"3 Barriers, Lw={int(Lw[0]*1e9)}/{int(Lw[1]*1e9)} nm", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "L_wells": Lw, "E_target": 0.02234}))
-            for Lw in [[10e-9,20e-9], [15e-9,15e-9], [20e-9,10e-9]]
+            (f"{labels[i]}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "L_wells": L_wells[i], "L_barriers": L_barriers[i], "E_target": 0.02234}))
+            for i in range(len(L_barriers))
         ]
-        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Three Barrier Structure")    
+        IVCharacteristic.plot_IV_sweep(iv_voltages, sweep_IV, title="IV Sweep: Multiple Barrier Structure")    
