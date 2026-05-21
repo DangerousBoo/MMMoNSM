@@ -572,7 +572,7 @@ class IVCharacteristic:
     @staticmethod
     def plot_IV_sweep(voltages, sweep, title="IV Sweep"):
         cmap = plt.get_cmap("tab10")
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(8, 5))
 
         for idx, (label, currents) in enumerate(sweep):
             color = cmap(idx % 10)
@@ -584,7 +584,7 @@ class IVCharacteristic:
         ax.set_ylabel("Current (µA)")
         ax.legend(fontsize=8)
         ax.grid(True, which="both", ls="--")
-        plt.tight_layout()
+        # plt.tight_layout()
         plt.show()
 
 if __name__ == '__main__':
@@ -627,6 +627,9 @@ if __name__ == '__main__':
         except (ValueError, EOFError):
             print(f"  Invalid input, using default {default}.")
             return default
+    # ======================
+    # === RUN EXPERIMENT ===
+    # ======================
 
     # --- Single T(E) spectrum ---
     if "single" in _selected:
@@ -734,7 +737,7 @@ if __name__ == '__main__':
         print("\n--- Running: Sweep PML Thickness ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
-                    T_total=2000e-15, E_target=0.35, pml_prefactor=2.0)
+                    T_total=20000e-15, E_target=0.35, pml_prefactor=2.0)
         sweep = [run_pair(f"{nw}λ PML", {**base, "pml_wavelengths": nw})
                  for nw in [1, 2, 4]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Thickness (λ_dB)")
@@ -744,7 +747,7 @@ if __name__ == '__main__':
         print("\n--- Running: Sweep PML Prefactor ---")
         base = dict(n_y=1, n_z=1, V0=0.6, V_DC=0.0,
                     L_barriers=[10e-9, 10e-9], L_wells=[30e-9],
-                    T_total=2000e-15, E_target=0.35, pml_wavelengths=4)
+                    T_total=10000e-15, E_target=0.35, pml_wavelengths=4)
         sweep = [run_pair(f"{p}×E_t PML", {**base, "pml_prefactor": p})
                  for p in [1, 2, 4]]
         TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: PML Prefactor (W_max/E_target)")
@@ -776,7 +779,7 @@ if __name__ == '__main__':
         # sweep = [run_pair(f"Multiple Barrier Structures", {**base, "L_wells": L_wells[i], "L_barriers": L_barriers[i]})
         #          for i in range(len(L_barriers))]
         # TransmissionAnalyzer.plot_transmission_sweep(sweep, title="Sweep: Multiple Barrier Structure")
-        iv_voltages = np.linspace(0.6, 1.1, 50)
+        iv_voltages = np.linspace(0.6, 0.92, 50)
         sweep_IV = [
             (f"{labels[i]}", IVCharacteristic.compute_IV_curve(iv_voltages, {**base, "L_wells": L_wells[i], "L_barriers": L_barriers[i], "E_target": 0.02234}))
             for i in range(len(L_barriers))
